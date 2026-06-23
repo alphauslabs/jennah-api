@@ -29,6 +29,4 @@ Then run:
 $ buf dep update && buf generate
 ```
 
-Generated SDKs from updates to this repository:
-
-* [jennah-sdk-go](https://github.com/alphauslabs/jennah-sdk-go)
+CI build auto-updates the [jennah-sdk-go](https://github.com/alphauslabs/jennah-sdk-go) repo.
