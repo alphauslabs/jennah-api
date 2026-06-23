@@ -18,6 +18,7 @@ jobs:
       env:
         DEPLOYER_TOKEN: ${{secrets.GH_TOKEN}}
       run: |
+        mkdir -p $HOME/.local/bin
         curl -LO https://github.com/bufbuild/buf/releases/download/v1.71.0/buf-Linux-x86_64.tar.gz
         tar xvzf buf-Linux-x86_64.tar.gz
         cp buf/bin/* $HOME/.local/bin/
