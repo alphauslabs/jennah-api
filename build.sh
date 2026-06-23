@@ -1,7 +1,7 @@
 #!/bin/sh
 
 echo "Compiling proto files..."
-buf generate
+buf dep update && buf generate
 
 # echo "Generating OpenAPI docs..."
 protoc -I . --openapiv2_out ./openapiv2 --openapiv2_opt logtostderr=true --openapiv2_opt allow_merge=true \
