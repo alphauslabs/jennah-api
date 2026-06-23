@@ -1,9 +1,5 @@
 [![main](https://github.com/alphauslabs/blueinternal/actions/workflows/main.yml/badge.svg)](https://github.com/alphauslabs/blueinternal/actions/workflows/main.yml)
 
-Common proto dependencies (`googleapis` and `grpc-gateway`, which provide
-`google/api/*` and `protoc-gen-openapiv2/options/*`) are resolved as buf module
-dependencies declared in `buf.yaml` and fetched by `buf dep update`.
-
 You need to install the following tools to build locally:
 
 * The [protoc](https://grpc.io/docs/protoc-installation/) compiler
