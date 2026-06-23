@@ -1,4 +1,4 @@
-[![main](https://github.com/alphauslabs/blueinternal/actions/workflows/main.yml/badge.svg)](https://github.com/alphauslabs/blueinternal/actions/workflows/main.yml)
+[![main](https://github.com/alphauslabs/jennah-api/actions/workflows/main.yml/badge.svg)](https://github.com/alphauslabs/jennah-api/actions/workflows/main.yml)
 
 You need to install the following tools to build locally:
 
