@@ -1,0 +1,18 @@
+version: v2
+lint:
+  use:
+    - DEFAULT
+  except:
+    - ENUM_FIRST_VALUE_ZERO
+    - FIELD_NOT_REQUIRED
+    - IMPORT_USED
+    - PACKAGE_NO_IMPORT_CYCLE
+    - PROTOVALIDATE
+    - SYNTAX_SPECIFIED
+  disallow_comment_ignores: true
+breaking:
+  use:
+    - FILE
+  except:
+    - EXTENSION_NO_DELETE
+    - FIELD_SAME_DEFAULT
