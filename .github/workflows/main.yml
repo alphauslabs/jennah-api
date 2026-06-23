@@ -32,7 +32,6 @@ jobs:
         if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
           exit 0
         fi
-        exit 0
         # Update jennah-sdk-go:
         WORKSPACE_ROOT=$PWD
         cd /tmp/ && git clone https://$DEPLOYER_TOKEN:@github.com/alphauslabs/jennah-sdk-go && cd jennah-sdk-go/
