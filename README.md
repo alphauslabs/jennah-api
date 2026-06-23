@@ -31,4 +31,4 @@ $ buf dep update && buf generate
 
 Generated SDKs from updates to this repository:
 
-* [blue-internal-go](https://github.com/alphauslabs/blue-internal-go)
+* [jennah-sdk-go](https://github.com/alphauslabs/jennah-sdk-go)
