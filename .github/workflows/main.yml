@@ -35,7 +35,6 @@ jobs:
         # Update jennah-sdk-go:
         WORKSPACE_ROOT=$PWD
         cd /tmp/ && git clone https://$DEPLOYER_TOKEN:@github.com/alphauslabs/jennah-sdk-go && cd jennah-sdk-go/
-        cp -rv $WORKSPACE_ROOT/generated/index.html docs/
         cp -rv $WORKSPACE_ROOT/generated/go/* . && git status
         git config user.email "dev@mobingi.com"
         git config user.name "mobingideployer"
