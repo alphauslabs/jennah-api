@@ -28,7 +28,7 @@ jobs:
         export GO111MODULE=on
         export PATH="$PATH:$HOME/.local/bin:$(go env GOPATH)/bin"
         # Start build:
-        buf dep update && buf generate
+        go install tool && buf dep update && buf generate
         if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
           exit 0
         fi
