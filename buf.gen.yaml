@@ -9,8 +9,6 @@ plugins:
   - local: protoc-gen-grpc-gateway
     out: generated/go
     opt: paths=source_relative
-  - protoc_builtin: java
-    out: generated/java
   - local: protoc-gen-openapi
     out: generated/openapi
     strategy: all

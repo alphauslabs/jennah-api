@@ -7,8 +7,6 @@ import "google/protobuf/struct.proto";
 import "gnostic/openapi/v3/annotations.proto";
 
 option go_package = "github.com/alphauslabs/jennah-api/iam";
-option java_package = "cloud.alphaus.api.iam";
-option java_outer_classname = "IamProto";
 
 // Global OpenAPI v3 document info for gnostic's protoc-gen-openapi. In v3, the
 // Swagger 2.0 host/base_path/schemes are expressed as a `servers` list.
