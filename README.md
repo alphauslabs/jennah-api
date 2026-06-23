@@ -19,9 +19,7 @@ $ go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@l
 $ go install github.com/google/gnostic/cmd/protoc-gen-openapi@latest
 ```
 
-  OpenAPI generation uses [gnostic's](https://github.com/google/gnostic)
-  `protoc-gen-openapi` (OpenAPI v3, output to `generated/openapi/`), not
-  grpc-gateway's `protoc-gen-openapiv2` (Swagger 2.0).
+  OpenAPI generation uses [gnostic's](https://github.com/google/gnostic) `protoc-gen-openapi` (OpenAPI v3), not grpc-gateway's `protoc-gen-openapiv2` (Swagger 2.0).
 
 * The [buf](https://docs.buf.build/installation) tool
 
