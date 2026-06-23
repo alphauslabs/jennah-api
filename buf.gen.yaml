@@ -11,5 +11,10 @@ plugins:
     opt: paths=source_relative
   - protoc_builtin: java
     out: generated/java
-  - local: protoc-gen-openapiv2
-    out: generated/go
+  - local: protoc-gen-openapi
+    out: generated/openapi
+    strategy: all
+    opt:
+      - output_mode=merge
+      - naming=proto
+      - fq_schema_naming=true
