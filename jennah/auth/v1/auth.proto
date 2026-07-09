@@ -90,6 +90,24 @@ enum ClientType {
   CLIENT_TYPE_CLI = 2;
 }
 
+// A caller's role within an enterprise. Exactly one ROLE_ROOT per enterprise
+// (its creator/owner); resolved from the Memberships table, never carried in
+// the access token (so role changes apply immediately).
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_ROOT        = 1; // creator/owner, exactly one per enterprise
+  ROLE_ADMIN       = 2;
+  ROLE_MEMBER      = 3;
+}
+
+// One of the caller's enterprise memberships (a row in the Memberships join
+// table), surfaced in Identity so a multi-enterprise user can pick which one to
+// switch into.
+message Membership {
+  string enterprise_id = 1;
+  Role   role          = 2;
+}
+
 // The resolved jennah caller identity. jennah's own user id is authoritative;
 // provider_uid/email come from the provider that established the session.
 message Identity {
@@ -100,6 +118,12 @@ message Identity {
   string   picture          = 5;
   Provider provider         = 6; // provider that established THIS session
   repeated Provider linked_providers = 7;
+
+  // Enterprise scope. active_enterprise_id is the enterprise the current access
+  // token is scoped to (the `enterprise_id` JWT claim); memberships lists every
+  // enterprise the caller belongs to, for enterprise switching in the UI.
+  string   active_enterprise_id      = 8;
+  repeated Membership memberships     = 9;
 }
 
 // Request message for the AuthService.WhoAmI rpc.
@@ -181,6 +205,10 @@ message PollDeviceLoginResponse {
 // Request message for the AuthService.RefreshToken rpc.
 message RefreshTokenRequest {
   string refresh_token = 1;
+  // Optional enterprise switch: re-mint the access token scoped to this
+  // enterprise instead of the session's current one. Must be an enterprise the
+  // caller is a member of; empty keeps the session's existing scope.
+  string enterprise_id = 2;
 }
 
 // Response message for the AuthService.RefreshToken rpc.
