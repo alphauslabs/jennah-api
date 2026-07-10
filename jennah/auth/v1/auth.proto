@@ -60,6 +60,13 @@ service AuthService {
   // upserts the user, and mints jennah tokens. Unauthenticated (allowlist).
   rpc CompleteLogin(CompleteLoginRequest) returns (CompleteLoginResponse);
 
+  // Redeems a single-use one-time code (issued by CompleteLogin in CODE
+  // response mode) for the minted jennah tokens. Used by a confidential
+  // server-side client (a BFF) so tokens are never delivered to the browser.
+  // The code is single-use and short-lived. Unauthenticated (the code itself
+  // is the credential; allowlist).
+  rpc ExchangeCode(ExchangeCodeRequest) returns (ExchangeCodeResponse);
+
   // Begins the CLI device-code flow. Unauthenticated (allowlist).
   rpc StartDeviceLogin(StartDeviceLoginRequest) returns (StartDeviceLoginResponse);
 
@@ -88,6 +95,22 @@ enum ClientType {
   CLIENT_TYPE_WEB = 1;
   // CLI: loopback / device-code, state persisted in the oauth_state table.
   CLIENT_TYPE_CLI = 2;
+}
+
+// How minted jennah tokens are delivered on the final redirect to the app's
+// app_redirect. Chosen at StartLogin and carried inside the encrypted state so
+// the callback resolves it without per-instance memory.
+enum ResponseMode {
+  // Defaults to FRAGMENT.
+  RESPONSE_MODE_UNSPECIFIED = 0;
+  // Public client / test harness: callback redirects with tokens in the URL
+  // fragment (#access_token=...). NOT for production — the refresh token
+  // transits the browser.
+  RESPONSE_MODE_FRAGMENT = 1;
+  // Confidential client (server-side BFF): callback redirects with only a
+  // single-use ?code=...; the client redeems it via ExchangeCode. No jennah
+  // token ever reaches the browser.
+  RESPONSE_MODE_CODE = 2;
 }
 
 // A caller's role within an enterprise. Exactly one ROLE_ROOT per enterprise
@@ -136,9 +159,10 @@ message WhoAmIResponse {
 
 // Request message for the AuthService.StartLogin rpc.
 message StartLoginRequest {
-  Provider   provider     = 1;
-  ClientType client_type  = 2;
-  string     app_redirect = 3; // where to send the browser after login; validated vs allowlist
+  Provider     provider      = 1;
+  ClientType   client_type   = 2;
+  string       app_redirect  = 3; // where to send the browser after login; validated vs allowlist
+  ResponseMode response_mode = 4; // token delivery on the final redirect; defaults to FRAGMENT
 }
 
 // Response message for the AuthService.StartLogin rpc.
@@ -156,12 +180,34 @@ message CompleteLoginRequest {
 }
 
 // Response message for the AuthService.CompleteLogin rpc.
+//
+// Delivery depends on response_mode. In FRAGMENT mode the token fields are
+// populated and the proxy puts them in the redirect fragment. In CODE mode the
+// tokens are withheld from this response and `code` carries the single-use
+// one-time code the proxy places on the redirect (?code=...) for a confidential
+// client to redeem via ExchangeCode.
 message CompleteLoginResponse {
-  string   access_token  = 1; // jennah JWT (~1h)
-  string   refresh_token = 2; // opaque, revocable (~30d)
-  int64    expires_in    = 3; // access-token TTL, seconds
-  string   app_redirect  = 4; // validated target the proxy redirects the browser to
-  Identity identity      = 5;
+  string       access_token  = 1; // FRAGMENT mode only: jennah JWT (~1h)
+  string       refresh_token = 2; // FRAGMENT mode only: opaque, revocable (~30d)
+  int64        expires_in    = 3; // access-token TTL, seconds
+  string       app_redirect  = 4; // validated target the proxy redirects the browser to
+  Identity     identity      = 5;
+  string       code          = 6; // CODE mode only: single-use one-time code for the redirect
+  ResponseMode response_mode = 7; // resolved delivery mode; tells the proxy how to deliver
+}
+
+// Request message for the AuthService.ExchangeCode rpc.
+message ExchangeCodeRequest {
+  string code = 1; // the single-use one-time code from a CODE-mode callback
+}
+
+// Response message for the AuthService.ExchangeCode rpc.
+message ExchangeCodeResponse {
+  string access_token  = 1; // jennah JWT (~1h)
+  string refresh_token = 2; // opaque, revocable (~30d)
+  string token_type    = 3; // "Bearer"
+  int64  expires_in    = 4; // access-token TTL, seconds
+  bool   is_new_user   = 5; // true when this login was a first-time signup
 }
 
 // Request message for the AuthService.StartDeviceLogin rpc.
