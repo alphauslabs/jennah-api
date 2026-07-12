@@ -3,6 +3,7 @@ syntax = "proto3";
 package jennahapi.auth.v1;
 
 import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
 import "gnostic/openapi/v3/annotations.proto";
 
 option go_package = "github.com/alphauslabs/jennah-api/auth";
@@ -149,12 +150,32 @@ message Identity {
   repeated Membership memberships     = 9;
 }
 
+// Entitlement is the caller's current tier and trial state for the active
+// enterprise, mirrored from the access token so a client can render account
+// status (a trial countdown, an upgrade prompt) without decoding the JWT. Only
+// the trial gate is enforced today; tier is a free-form string (e.g. "trial")
+// while paid tiers are still being defined.
+message Entitlement {
+  string tier = 1; // e.g. "trial"
+
+  // trial_ends_at is the immutable trial deadline; unset when the caller is not
+  // on a trial or has no known deadline.
+  google.protobuf.Timestamp trial_ends_at = 2;
+
+  // trial_active is the server's decision: true while the trial is still valid
+  // (or the tier is not a trial), false once it has lapsed. A caller whose
+  // trial has lapsed is blocked from other RPCs, so this is chiefly meaningful
+  // because WhoAmI remains callable to surface exactly this state.
+  bool trial_active = 3;
+}
+
 // Request message for the AuthService.WhoAmI rpc.
 message WhoAmIRequest {}
 
 // Response message for the AuthService.WhoAmI rpc.
 message WhoAmIResponse {
-  Identity identity = 1;
+  Identity    identity    = 1;
+  Entitlement entitlement = 2;
 }
 
 // Request message for the AuthService.StartLogin rpc.
