@@ -7,9 +7,9 @@ import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/alphauslabs/jennah-api/agent";
 
-// AgentService owns agent-workspace lifecycle: spawning an isolated agent
+// AgentService owns agent-workspace lifecycle: creating an isolated agent
 // context bucket, reading it back, listing an enterprise's agents, and
-// atomically destroying one (with all its memory).
+// atomically deleting one (with all its memory).
 //
 // Every RPC is an EXTERNAL (gateway) RPC — it carries a google.api.http
 // annotation so grpc-gateway publishes it on the public REST surface — and
@@ -17,7 +17,7 @@ option go_package = "github.com/alphauslabs/jennah-api/agent";
 // verified access token, never from the request body or path. Memory-data RPCs
 // (memory/commit, memory/query) live in their own service, added separately.
 service AgentService {
-  // Spawns a new agent workspace under the caller's enterprise. The home region
+  // Creates a new agent workspace under the caller's enterprise. The home region
   // is resolved from the optional `region` field (a Jennah region identifier
   // validated against the configured allowlist) or the platform default region;
   // the region's data-plane instance and the enterprise's named schema are
@@ -30,7 +30,7 @@ service AgentService {
   // provisions inline and returns ACTIVE directly; the PROVISIONING status is
   // the forward-compatible signal for when region/instance creation — which can
   // take minutes — is made asynchronous.)
-  rpc SpawnAgent(SpawnAgentRequest) returns (SpawnAgentResponse) {
+  rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse) {
     option (google.api.http) = {
       post: "/v1/agents"
       body: "*"
@@ -38,7 +38,7 @@ service AgentService {
   }
 
   // Reads a single agent workspace the caller owns, including its current
-  // lifecycle status. This is the readiness-poll surface for a spawn that is
+  // lifecycle status. This is the readiness-poll surface for a create that is
   // still provisioning. An agent_instance_id not owned by the caller's
   // enterprise is treated as not found.
   rpc GetAgent(GetAgentRequest) returns (GetAgentResponse) {
@@ -56,12 +56,12 @@ service AgentService {
     };
   }
 
-  // Destroys an agent workspace the caller owns with a single tenant-scoped
+  // Deletes an agent workspace the caller owns with a single tenant-scoped
   // delete that cascades to all of the agent's memory (execution logs, vectors,
   // graph). Returns an erasure receipt: the commit timestamp and the per-memory-
   // type row counts removed. An agent_instance_id not owned by the caller's
   // enterprise is treated as not found.
-  rpc DestroyAgent(DestroyAgentRequest) returns (DestroyAgentResponse) {
+  rpc DeleteAgent(DeleteAgentRequest) returns (DeleteAgentResponse) {
     option (google.api.http) = {
       delete: "/v1/agents/{agent_instance_id}"
     };
@@ -80,7 +80,7 @@ enum AgentStatus {
   // being created). No data-plane row exists yet; poll GetAgent until ACTIVE.
   AGENT_STATUS_PROVISIONING = 4;
   // Provisioning failed; status_detail carries the reason. The caller may retry
-  // SpawnAgent (idempotent on agent_instance_id) or destroy the failed record.
+  // CreateAgent (idempotent on agent_instance_id) or delete the failed record.
   AGENT_STATUS_FAILED = 5;
 }
 
@@ -101,8 +101,8 @@ message AgentInstance {
   string                    status_detail     = 7;
 }
 
-// Request message for the AgentService.SpawnAgent rpc.
-message SpawnAgentRequest {
+// Request message for the AgentService.CreateAgent rpc.
+message CreateAgentRequest {
   string agent_instance_id = 1; // caller-chosen id, unique within the enterprise
   string agent_name        = 2;
   // Optional Jennah region identifier (e.g. "us-east-1"). Must be in the
@@ -110,8 +110,8 @@ message SpawnAgentRequest {
   string region            = 3;
 }
 
-// Response message for the AgentService.SpawnAgent rpc.
-message SpawnAgentResponse {
+// Response message for the AgentService.CreateAgent rpc.
+message CreateAgentResponse {
   AgentInstance agent = 1;
 }
 
@@ -137,16 +137,16 @@ message ListAgentsResponse {
   string                 next_page_token = 2; // empty when there are no more pages
 }
 
-// Request message for the AgentService.DestroyAgent rpc.
-message DestroyAgentRequest {
+// Request message for the AgentService.DeleteAgent rpc.
+message DeleteAgentRequest {
   string agent_instance_id = 1; // path parameter
 }
 
-// Response message for the AgentService.DestroyAgent rpc.
+// Response message for the AgentService.DeleteAgent rpc.
 //
 // The erasure receipt: a commit timestamp plus how many rows were removed per
 // memory type, so a caller can evidence a complete, atomic erasure.
-message DestroyAgentResponse {
+message DeleteAgentResponse {
   google.protobuf.Timestamp deleted_at         = 1; // cascade-delete commit timestamp
   int64                     execution_log_rows = 2;
   int64                     vector_rows        = 3;
