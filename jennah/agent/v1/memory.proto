@@ -1,0 +1,245 @@
+syntax = "proto3";
+
+package jennahapi.agent.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/alphauslabs/jennah-api/agent";
+
+// MemoryService is the unified memory-data plane for an agent workspace. Where
+// AgentService (agent.proto) owns workspace lifecycle, MemoryService owns the
+// data an agent accumulates inside a workspace: execution-log steps, vector
+// (semantic) chunks, and property-graph nodes/edges.
+//
+// The surface is deliberately just two RPCs — CommitMemory (write) and
+// QueryMemory (read) — each spanning one or more memory SECTIONS
+// (execution-log, vector, graph). A request carrying a single section is the
+// degenerate case and behaves identically to that section run alone; the
+// per-type SDK conveniences (logs.create, vectors.upsert/search, graph.query)
+// are thin single-section wrappers over these two RPCs and map to no other
+// route.
+//
+// Like AgentService, every RPC is an EXTERNAL (gateway) RPC — it carries a
+// google.api.http annotation so grpc-gateway publishes it on the public REST
+// surface — and every RPC is AUTHENTICATED: the caller's EnterpriseId is taken
+// from the verified access token, and the AgentInstanceId from the route path.
+// Neither is ever read from the request body. Every access is qualified by the
+// enterprise's named schema and clamped to the (EnterpriseId, AgentInstanceId)
+// slice; caller-supplied GQL is clamped before execution and cannot widen it.
+service MemoryService {
+  // Applies a multi-section memory step in a SINGLE Spanner read-write
+  // transaction: an optional execution-log step, an optional set of vector
+  // chunks, and an optional set of graph writes. The commit is all-or-nothing —
+  // if any section fails (e.g. a vector whose width does not match the
+  // database), no section's rows are written. The commit is rejected, writing
+  // nothing, if the target workspace does not exist under the caller's tenant.
+  // Returns a receipt: the commit timestamp and per-memory-type row counts.
+  rpc CommitMemory(CommitMemoryRequest) returns (CommitMemoryResponse) {
+    option (google.api.http) = {
+      post: "/v1/agents/{agent_instance_id}/memory:commit"
+      body: "*"
+    };
+  }
+
+  // Evaluates a multi-section read against ONE read snapshot so results are
+  // internally consistent across memory types: an optional semantic (vector)
+  // section, an optional graph (GQL) section, and an optional execution-log
+  // section. Returns one result section per requested section, plus a fused
+  // result when `link` is set. An optional `as_of` timestamp is applied
+  // uniformly to every section so all sections observe the same historical
+  // instant. Every section is clamped to the caller's (EnterpriseId,
+  // AgentInstanceId) slice.
+  rpc QueryMemory(QueryMemoryRequest) returns (QueryMemoryResponse) {
+    option (google.api.http) = {
+      post: "/v1/agents/{agent_instance_id}/memory:query"
+      body: "*"
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Commit
+// ---------------------------------------------------------------------------
+
+// Request for MemoryService.CommitMemory.
+//
+// Any subset of the three section fields may be present; at least one SHOULD
+// be. All present sections are written in the same transaction.
+message CommitMemoryRequest {
+  string agent_instance_id = 1; // route path parameter; never read from the body
+
+  // Execution-log section: a single step the agent recorded. Absent to commit
+  // no log step.
+  ExecutionLogStep log = 2;
+
+  // Vector section: chunks to upsert (write-or-replace) within the agent slice.
+  // Empty to commit no vectors.
+  repeated VectorChunk vectors = 3;
+
+  // Graph section: node and/or edge writes. Absent to commit no graph data.
+  GraphWrite graph = 4;
+}
+
+// A single execution-memory step. On CommitMemory only the payload fields are
+// read; `timestamp` is OUTPUT-ONLY (server-assigned) and populated when the
+// step is read back via QueryMemory's log section.
+message ExecutionLogStep {
+  string step_id         = 1; // caller-chosen; unique within the agent slice
+  string thought_process = 2;
+  string tool_used       = 3;
+  string tool_input      = 4;
+  string tool_output     = 5;
+  google.protobuf.Timestamp timestamp = 6; // output-only; server commit timestamp
+}
+
+// A semantic-memory chunk to upsert.
+message VectorChunk {
+  string chunk_id    = 1; // caller-chosen; unique within the agent slice
+  string raw_content = 2;
+  // Optional precomputed embedding. When empty, the gateway generates it from
+  // raw_content server-side (Vertex AI, task_type RETRIEVAL_DOCUMENT). When
+  // supplied, its length MUST equal the data-plane database's configured
+  // embedding width or the whole commit is rejected. float (32-bit) matches the
+  // store's ARRAY<FLOAT32> vector column.
+  repeated float embedding = 3;
+}
+
+// Graph-memory writes for one commit. Edges may only connect nodes within the
+// same (EnterpriseId, AgentInstanceId) slice. (Edges are point-in-time facts;
+// bi-temporal validity and caller-driven supersession are a follow-on change
+// and are intentionally not modeled here yet.)
+message GraphWrite {
+  repeated GraphNode nodes = 1;
+  repeated GraphEdge edges = 2;
+}
+
+message GraphNode {
+  string node_id = 1; // caller-chosen; unique within the agent slice
+  string label   = 2;
+  google.protobuf.Struct properties = 3; // free-form JSON properties
+}
+
+message GraphEdge {
+  string edge_id           = 1; // caller-chosen; unique within the agent slice
+  string source_node_id    = 2; // must reference a GraphNode in the same slice
+  string target_node_id    = 3; // must reference a GraphNode in the same slice
+  string relationship_type = 4;
+  google.protobuf.Struct properties = 5; // free-form JSON properties
+}
+
+// The commit receipt: a commit timestamp plus how many rows were written per
+// memory type, so a caller can evidence exactly what the atomic step persisted.
+message CommitMemoryResponse {
+  google.protobuf.Timestamp commit_timestamp = 1;
+  int64 execution_log_rows = 2;
+  int64 vector_rows        = 3;
+  int64 graph_node_rows    = 4;
+  int64 graph_edge_rows    = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Query
+// ---------------------------------------------------------------------------
+
+// Request for MemoryService.QueryMemory.
+//
+// Any subset of the three section fields may be present. All present sections
+// are evaluated at one read timestamp.
+message QueryMemoryRequest {
+  string agent_instance_id = 1; // route path parameter; never read from the body
+
+  // Semantic (vector/ANN) section. Absent to skip semantic retrieval.
+  SemanticQuery semantic = 2;
+  // Graph (GQL traversal) section. Absent to skip graph retrieval.
+  GraphQuery graph = 3;
+  // Execution-log recency section. Absent to skip the log.
+  LogQuery log = 4;
+
+  // When true, the semantic and graph sections are composed and an additional
+  // `fused` result is returned. Requires both of those sections to be present.
+  bool link = 5;
+  // Fusion direction when `link` is set. Unspecified defaults to VECTOR_FIRST.
+  FusionDirection fusion_direction = 6;
+
+  // Optional as-of read timestamp, applied UNIFORMLY to every section so all
+  // sections observe the same historical instant. Empty reads the latest data.
+  google.protobuf.Timestamp as_of = 7;
+}
+
+// Direction of vector+graph fusion when a query links the two sections.
+enum FusionDirection {
+  FUSION_DIRECTION_UNSPECIFIED = 0; // treated as VECTOR_FIRST
+  // ANN vector search produces candidate nodes, then the graph traverses from
+  // them. This is the default.
+  FUSION_DIRECTION_VECTOR_FIRST = 1;
+  // Graph traversal produces a candidate set, then it is ranked by EXACT vector
+  // distance (not the ANN index).
+  FUSION_DIRECTION_GRAPH_FIRST = 2;
+}
+
+// Semantic-section query. Exactly one of `embedding` or `query_text` MUST be
+// supplied; when `query_text` is given the gateway embeds it server-side
+// (task_type RETRIEVAL_QUERY). Results are ranked by ascending cosine distance
+// and clamped to the caller's agent slice (the clamp never silently truncates
+// below `limit`).
+message SemanticQuery {
+  repeated float embedding = 1; // precomputed query embedding; width must match the db
+  string         query_text = 2; // embedded server-side when `embedding` is absent
+  int32          limit      = 3; // max matches to return
+}
+
+// Graph-section query: a GQL traversal over the agent's AgentKnowledgeGraph.
+// The gateway injects the EnterpriseId/AgentInstanceId clamp into every matched
+// pattern before execution; a caller GQL string can neither omit the clamp nor
+// widen the slice.
+message GraphQuery {
+  string gql = 1;
+}
+
+// Execution-log-section query: the agent's most recent steps in commit-
+// timestamp order.
+message LogQuery {
+  int32 limit                       = 1; // max steps to return
+  google.protobuf.Timestamp since   = 2; // optional recency lower bound
+}
+
+// Response for MemoryService.QueryMemory. Each result section is present only
+// when its corresponding request section was supplied. `fused` is present only
+// when the request set `link`.
+message QueryMemoryResponse {
+  SemanticResult semantic = 1;
+  GraphResult    graph    = 2;
+  LogResult      log      = 3;
+  FusedResult    fused    = 4;
+  // The single read timestamp every section was evaluated at.
+  google.protobuf.Timestamp read_timestamp = 5;
+}
+
+message SemanticResult {
+  repeated SemanticMatch matches = 1;
+}
+
+message SemanticMatch {
+  string chunk_id    = 1;
+  string raw_content = 2;
+  double distance    = 3; // cosine distance; smaller is closer
+}
+
+// GQL result rows. A row's shape depends on the query's RETURN clause, so each
+// row is carried as a structured value rather than a fixed schema.
+message GraphResult {
+  repeated google.protobuf.Struct rows = 1;
+}
+
+message LogResult {
+  repeated ExecutionLogStep steps = 1; // timestamp-populated records, newest first
+}
+
+// The linked semantic+graph view. Its exact shape depends on fusion direction
+// and is carried as structured values until the fused-result schema is pinned
+// down; see the unified-memory spec's fusion requirements.
+message FusedResult {
+  repeated google.protobuf.Struct items = 1;
+}
