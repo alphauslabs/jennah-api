@@ -20,8 +20,9 @@ service AgentService {
   // Creates a new agent workspace under the caller's enterprise. The home region
   // is resolved from the optional `region` field (a Jennah region identifier
   // validated against the configured allowlist) or the platform default region;
-  // the region's data-plane instance and the enterprise's named schema are
-  // provisioned on first use. The EnterpriseId is taken from the token, never
+  // the region's data-plane instance is provisioned on first use (its tables are
+  // created once per database, and tenancy is row-level — the AgentInstances row
+  // is keyed by EnterpriseId). The EnterpriseId is taken from the token, never
   // the body.
   //
   // Returns the workspace synchronously. When provisioning is still in flight
@@ -71,13 +72,13 @@ service AgentService {
 // Lifecycle state of an agent workspace.
 enum AgentStatus {
   AGENT_STATUS_UNSPECIFIED = 0;
-  // Ready for use: the region and enterprise schema are provisioned and the
+  // Ready for use: the region's data-plane instance is provisioned and the
   // AgentInstances row exists in the data plane.
   AGENT_STATUS_ACTIVE = 1;
   AGENT_STATUS_PAUSED    = 2;
   AGENT_STATUS_COMPLETED = 3;
-  // Provisioning is still in flight (region instance and/or enterprise schema
-  // being created). No data-plane row exists yet; poll GetAgent until ACTIVE.
+  // Provisioning is still in flight (the region's data-plane instance is being
+  // created). No data-plane row exists yet; poll GetAgent until ACTIVE.
   AGENT_STATUS_PROVISIONING = 4;
   // Provisioning failed; status_detail carries the reason. The caller may retry
   // CreateAgent (idempotent on agent_instance_id) or delete the failed record.
