@@ -32,11 +32,13 @@ option (gnostic.openapi.v3.document) = {
 
 // Auth service definition.
 //
-// Only WhoAmI is exposed on the grpc-gateway REST surface (it carries a
-// google.api.http annotation). Every other RPC here is INTERNAL: it has no
-// HTTP annotation, so grpc-gateway emits no route for it and it is reachable
-// only over the backend's internal gRPC listener (127.0.0.1:8080), which is
-// where jennah-proxy's hand-written /auth/* handlers dial it. Do NOT add a
+// Two RPC groups carry a google.api.http annotation and are therefore EXTERNAL
+// (published on the grpc-gateway REST surface): WhoAmI, and the API-key
+// management RPCs (CreateApiKey / ListApiKeys / RevokeApiKey under
+// /auth/v1/apikeys). Every other RPC here is INTERNAL: it has no HTTP
+// annotation, so grpc-gateway emits no route for it and it is reachable only
+// over the backend's internal gRPC listener (127.0.0.1:8080), which is where
+// jennah-proxy's hand-written /auth/* handlers dial it. Do NOT add a
 // google.api.http annotation to the login/device/token RPCs — doing so would
 // publish them on the public REST surface.
 service AuthService {
@@ -80,6 +82,44 @@ service AuthService {
 
   // Revokes the session behind a refresh token. Authenticated.
   rpc Logout(LogoutRequest) returns (LogoutResponse);
+
+  // --- API-key management (external/gateway RPCs; authenticated) ---
+
+  // Mints a new API key for the caller's active enterprise. External (gateway)
+  // RPC. Authenticated AND gated to ROLE_ROOT/ROLE_ADMIN, resolved live from the
+  // Memberships table (never trusted from a claim). The plaintext secret is
+  // returned exactly once, in this response, and is NOT retrievable afterward —
+  // only its sha256 hash is stored. The key resolves to a ROLE_MEMBER-equivalent
+  // service principal scoped to the enterprise.
+  rpc CreateApiKey(CreateApiKeyRequest) returns (CreateApiKeyResponse) {
+    option (google.api.http) = {
+      post: "/auth/v1/apikeys"
+      body: "*"
+    };
+  }
+
+  // Lists the caller enterprise's API keys as non-secret metadata only (never
+  // the secret or its hash), most-recent first, with page_size/page_token
+  // pagination. External (gateway) RPC. Authenticated; scoped to the token's
+  // active enterprise.
+  rpc ListApiKeys(ListApiKeysRequest) returns (ListApiKeysResponse) {
+    option (google.api.http) = {
+      get: "/auth/v1/apikeys"
+    };
+  }
+
+  // Revokes an API key the caller's enterprise owns, taking effect on the next
+  // request (validation is a per-request lookup, so there is no TTL lag).
+  // External (gateway) RPC, modeled as a custom method (POST ...:revoke) rather
+  // than DELETE because it does not remove the resource — the row is retained
+  // with RevokedAt set, so the key stays listable as revoked. Authenticated AND
+  // gated to ROLE_ROOT/ROLE_ADMIN. A key_id not owned by the caller's active
+  // enterprise is treated as not found.
+  rpc RevokeApiKey(RevokeApiKeyRequest) returns (RevokeApiKeyResponse) {
+    option (google.api.http) = {
+      post: "/auth/v1/apikeys/{key_id}:revoke"
+    };
+  }
 }
 
 // Identity provider jennah supports for social login.
@@ -292,3 +332,64 @@ message LogoutRequest {
 
 // Response message for the AuthService.Logout rpc.
 message LogoutResponse {}
+
+// Non-secret metadata for a single API key. The raw secret is NEVER carried
+// here — it is returned only once, in CreateApiKeyResponse. `prefix` is a
+// non-secret display fragment (e.g. the last 4 characters) for identifying a
+// key in listings and logs.
+message ApiKey {
+  string                    key_id             = 1; // stable id (used in the revoke path)
+  // Enterprise that owns this key, resolved from the caller's token. Echoed for
+  // clarity; it is never accepted from a request body.
+  string                    enterprise_id      = 2;
+  string                    label              = 3; // human-readable label
+  string                    prefix             = 4; // non-secret display fragment (last 4)
+  string                    created_by_user_id = 5; // user who minted the key (attribution)
+  google.protobuf.Timestamp created_at         = 6; // server-assigned commit timestamp
+  // Best-effort last-use time; unset if the key has never been used. May lag
+  // slightly under load (the update is out of band).
+  google.protobuf.Timestamp last_used_at       = 7;
+  // Absolute expiry; unset means the key never expires.
+  google.protobuf.Timestamp expires_at         = 8;
+  // Revocation time; unset while the key is active.
+  google.protobuf.Timestamp revoked_at         = 9;
+}
+
+// Request message for the AuthService.CreateApiKey rpc.
+message CreateApiKeyRequest {
+  string label = 1; // human-readable label for the key
+  // Optional absolute expiry. When unset the key never expires.
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+// Response message for the AuthService.CreateApiKey rpc.
+//
+// `secret` is the full plaintext key (prefixed `jennah_sk_`), returned exactly
+// once — it cannot be retrieved again, so the caller must store it now. `key`
+// holds the non-secret metadata for the same key.
+message CreateApiKeyResponse {
+  string secret = 1; // one-time plaintext key: "jennah_sk_..."
+  ApiKey key    = 2; // non-secret metadata for the created key
+}
+
+// Request message for the AuthService.ListApiKeys rpc.
+message ListApiKeysRequest {
+  int32  page_size  = 1; // max keys to return; server picks a default when 0
+  string page_token = 2; // next_page_token from a prior response; empty for the first page
+}
+
+// Response message for the AuthService.ListApiKeys rpc.
+message ListApiKeysResponse {
+  repeated ApiKey keys            = 1; // non-secret metadata only
+  string          next_page_token = 2; // empty when there are no more pages
+}
+
+// Request message for the AuthService.RevokeApiKey rpc.
+message RevokeApiKeyRequest {
+  string key_id = 1; // path parameter; must belong to the caller's active enterprise
+}
+
+// Response message for the AuthService.RevokeApiKey rpc.
+message RevokeApiKeyResponse {
+  google.protobuf.Timestamp revoked_at = 1; // revocation commit timestamp
+}
