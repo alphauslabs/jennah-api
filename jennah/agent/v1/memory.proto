@@ -13,13 +13,16 @@ option go_package = "github.com/alphauslabs/jennah-api/agent";
 // data an agent accumulates inside a workspace: execution-log steps, vector
 // (semantic) chunks, and property-graph nodes/edges.
 //
-// The surface is deliberately just two RPCs — CommitMemory (write) and
-// QueryMemory (read) — each spanning one or more memory SECTIONS
-// (execution-log, vector, graph). A request carrying a single section is the
-// degenerate case and behaves identically to that section run alone; the
-// per-type SDK conveniences (logs.create, vectors.upsert/search, graph.query)
-// are thin single-section wrappers over these two RPCs and map to no other
-// route.
+// The surface is a small set of RPCs — CommitMemory (write) and QueryMemory
+// (read by anchor) plus InspectMemory (read by listing) — each spanning one or
+// more memory SECTIONS (execution-log, vector, graph). A request carrying a
+// single section is the degenerate case and behaves identically to that section
+// run alone; the per-type SDK conveniences (logs.create, vectors.upsert/search,
+// graph.query) are thin single-section wrappers over CommitMemory/QueryMemory
+// and map to no other route. QueryMemory retrieves by an anchor — a semantic
+// query or a graph start pattern — whereas InspectMemory lists the stored rows
+// WITHOUT an anchor, for debugging and inspection, and never returns embedding
+// vectors.
 //
 // Like AgentService, every RPC is an EXTERNAL (gateway) RPC — it carries a
 // google.api.http annotation so grpc-gateway publishes it on the public REST
@@ -57,6 +60,21 @@ service MemoryService {
   rpc QueryMemory(QueryMemoryRequest) returns (QueryMemoryResponse) {
     option (google.api.http) = {
       post: "/v1/agents/{agent_instance_id}/memory:query"
+      body: "*"
+    };
+  }
+
+  // Lists the stored rows of one or more memory sections WITHOUT a query anchor,
+  // for debugging and inspection: the vector chunks (content only — embedding
+  // vectors are never returned), the graph nodes and edges, and the recent
+  // execution-log steps. Unlike QueryMemory it takes no semantic query or graph
+  // start pattern; each requested section is simply enumerated within the
+  // caller's (EnterpriseId, AgentInstanceId) slice, up to a per-section limit,
+  // at ONE read snapshot so every section observes the same instant. This is a
+  // read-only diagnostic surface, not a retrieval path.
+  rpc InspectMemory(InspectMemoryRequest) returns (InspectMemoryResponse) {
+    option (google.api.http) = {
+      post: "/v1/agents/{agent_instance_id}/memory:inspect"
       body: "*"
     };
   }
@@ -290,4 +308,79 @@ message LogResult {
 // down; see the unified-memory spec's fusion requirements.
 message FusedResult {
   repeated google.protobuf.Struct items = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Inspect
+// ---------------------------------------------------------------------------
+
+// Request for MemoryService.InspectMemory.
+//
+// Any subset of the three section fields may be present; at least one SHOULD
+// be. All present sections are enumerated at one read snapshot within the
+// caller's (EnterpriseId, AgentInstanceId) slice. There is no query anchor:
+// unlike QueryMemory this lists stored rows for debugging, so a section is
+// requested simply by being present, bounded by its limit.
+message InspectMemoryRequest {
+  string agent_instance_id = 1; // route path parameter; never read from the body
+
+  // Vector section: list stored chunks (content only). Absent to skip vectors.
+  InspectVectors vectors = 2;
+  // Graph section: list stored nodes and edges. Absent to skip the graph.
+  InspectGraph graph = 3;
+  // Execution-log section: list recent steps. Absent to skip the log.
+  InspectLog log = 4;
+
+  // Optional as-of read timestamp, applied UNIFORMLY to every section so all
+  // sections observe the same historical instant. Empty reads the latest data.
+  google.protobuf.Timestamp as_of = 5;
+}
+
+// Vector-section listing request. Enumerates stored chunks; the embedding vector
+// is never included in the response (it is large and not human-inspectable).
+message InspectVectors {
+  int32 limit = 1; // max chunks; <= 0 uses the default, clamped to a server max
+}
+
+// Graph-section listing request. Enumerates stored nodes and edges independently
+// (this is a raw dump, not a traversal), each bounded by its own limit.
+message InspectGraph {
+  int32 node_limit = 1; // max nodes; <= 0 uses the default, clamped to a server max
+  int32 edge_limit = 2; // max edges; <= 0 uses the default, clamped to a server max
+}
+
+// Execution-log-section listing request: the agent's most recent steps in
+// commit-timestamp order (newest first). Mirrors LogQuery so callers can follow
+// the log incrementally (poll with `since` advanced to the prior read).
+message InspectLog {
+  int32 limit                     = 1; // max steps to return
+  google.protobuf.Timestamp since = 2; // optional recency lower bound
+}
+
+// Response for MemoryService.InspectMemory. Each result section is present only
+// when its corresponding request section was supplied.
+message InspectMemoryResponse {
+  VectorInspectResult vectors = 1;
+  GraphInspectResult  graph   = 2;
+  LogResult           log     = 3; // same ExecutionLogStep records as QueryMemory
+  // The single read timestamp every section was evaluated at.
+  google.protobuf.Timestamp read_timestamp = 4;
+}
+
+message VectorInspectResult {
+  repeated VectorChunkInfo chunks = 1;
+}
+
+// A stored vector chunk WITHOUT its embedding. The embedding column is
+// deliberately omitted: it is large and carries no debugging value in a listing.
+message VectorChunkInfo {
+  string chunk_id    = 1;
+  string raw_content = 2;
+}
+
+// Graph listing result: the stored nodes and edges themselves (reusing the same
+// GraphNode/GraphEdge shapes CommitMemory writes), NOT traversal rows.
+message GraphInspectResult {
+  repeated GraphNode nodes = 1;
+  repeated GraphEdge edges = 2;
 }
