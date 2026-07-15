@@ -334,16 +334,16 @@ message LogoutRequest {
 message LogoutResponse {}
 
 // Non-secret metadata for a single API key. The raw secret is NEVER carried
-// here — it is returned only once, in CreateApiKeyResponse. `prefix` is a
-// non-secret display fragment (e.g. the last 4 characters) for identifying a
-// key in listings and logs.
+// here — it is returned only once, in CreateApiKeyResponse. `last4` is a
+// non-secret display fragment (the last 4 characters) for identifying a key in
+// listings and logs.
 message ApiKey {
   string                    key_id             = 1; // stable id (used in the revoke path)
   // Enterprise that owns this key, resolved from the caller's token. Echoed for
   // clarity; it is never accepted from a request body.
   string                    enterprise_id      = 2;
   string                    label              = 3; // human-readable label
-  string                    prefix             = 4; // non-secret display fragment (last 4)
+  string                    last4              = 4; // non-secret display fragment (last 4 chars)
   string                    created_by_user_id = 5; // user who minted the key (attribution)
   google.protobuf.Timestamp created_at         = 6; // server-assigned commit timestamp
   // Best-effort last-use time; unset if the key has never been used. May lag
