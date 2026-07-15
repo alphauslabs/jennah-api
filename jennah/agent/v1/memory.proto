@@ -140,6 +140,10 @@ message GraphNode {
   string node_id = 1; // caller-chosen; unique within the agent slice
   string label   = 2;
   google.protobuf.Struct properties = 3; // free-form JSON properties
+  // Output-only: the row's last-write commit timestamp, populated when the node
+  // is read back via InspectMemory. Nodes are written create-or-replace, so this
+  // is the last write, not first creation. Ignored on CommitMemory.
+  google.protobuf.Timestamp updated_at = 4;
 }
 
 message GraphEdge {
@@ -148,6 +152,10 @@ message GraphEdge {
   string target_node_id    = 3; // must reference a GraphNode in the same slice
   string relationship_type = 4;
   google.protobuf.Struct properties = 5; // free-form JSON properties
+  // Output-only: the row's last-write commit timestamp, populated when the edge
+  // is read back via InspectMemory. Edges are written create-or-replace, so this
+  // is the last write, not first creation. Ignored on CommitMemory.
+  google.protobuf.Timestamp updated_at = 6;
 }
 
 // The commit receipt: a commit timestamp plus how many rows were written per
@@ -376,6 +384,9 @@ message VectorInspectResult {
 message VectorChunkInfo {
   string chunk_id    = 1;
   string raw_content = 2;
+  // Output-only: the chunk's last-write commit timestamp. Chunks are upserted, so
+  // this is the last write, not first creation.
+  google.protobuf.Timestamp updated_at = 3;
 }
 
 // Graph listing result: the stored nodes and edges themselves (reusing the same
