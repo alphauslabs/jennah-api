@@ -28,8 +28,9 @@ option go_package = "github.com/alphauslabs/jennah-api/agent";
 // Neither is ever read from the request body. Every access is clamped to the
 // (EnterpriseId, AgentInstanceId) slice by a mandatory bound predicate — tenancy
 // is row-level in the data plane's default schema, so EnterpriseId binds as a
-// parameter and no schema identifier is interpolated; caller-supplied GQL is
-// clamped before execution and cannot widen it.
+// parameter and no schema identifier is interpolated; the graph section is a
+// structured traversal from which the gateway builds the GQL server-side, so
+// the clamp is always present and the slice cannot be widened.
 service MemoryService {
   // Applies a multi-section memory step in a SINGLE Spanner read-write
   // transaction: an optional execution-log step, an optional set of vector
@@ -154,7 +155,7 @@ message QueryMemoryRequest {
 
   // Semantic (vector/ANN) section. Absent to skip semantic retrieval.
   SemanticQuery semantic = 2;
-  // Graph (GQL traversal) section. Absent to skip graph retrieval.
+  // Graph (structured traversal) section. Absent to skip graph retrieval.
   GraphQuery graph = 3;
   // Execution-log recency section. Absent to skip the log.
   LogQuery log = 4;
@@ -192,12 +193,55 @@ message SemanticQuery {
   int32          limit      = 3; // max matches to return
 }
 
-// Graph-section query: a GQL traversal over the agent's AgentKnowledgeGraph.
-// The gateway injects the EnterpriseId/AgentInstanceId clamp into every matched
-// pattern before execution; a caller GQL string can neither omit the clamp nor
-// widen the slice.
+// Graph-section query: a STRUCTURED traversal over the agent's
+// AgentKnowledgeGraph. The gateway BUILDS the GQL server-side from these typed
+// fields, so no caller-authored query text is ever executed: every generated
+// pattern element carries the (EnterpriseId, AgentInstanceId) clamp
+// unconditionally and the slice cannot be widened. All caller values bind as
+// query parameters; the few caller-supplied identifiers (property keys) are
+// validated against a strict allowlist. This is the "structural injection, not
+// trust" clamp — a free-form GQL string surface was rejected because it would
+// require parsing and rewriting untrusted query text.
+//
+// A query is an anchor node set plus zero or more single-hop traversals. Each
+// hop is one `GraphStep`; multi-hop traversal is expressed as successive steps.
 message GraphQuery {
-  string gql = 1;
+  GraphNodeMatch start = 1;      // anchor node set the traversal begins from
+  repeated GraphStep steps = 2;  // single-hop traversals; empty returns the anchor set
+  int32 limit = 3;               // max rows; <= 0 uses the default, clamped to a server max
+}
+
+// A node-pattern constraint. `label` optionally filters the node's semantic
+// `Label` property (e.g. "Person"); `filters` are optional equality predicates.
+// The gateway always adds the (EnterpriseId, AgentInstanceId) clamp to the
+// generated element — it is NOT expressible here and cannot be overridden.
+message GraphNodeMatch {
+  string label = 1;                    // optional equality filter on the node's `Label`
+  repeated PropertyFilter filters = 2; // optional property equality filters (values bound)
+}
+
+// One single-hop traversal to an adjacent node.
+message GraphStep {
+  string relationship_type = 1;  // optional equality filter on the edge's `RelationshipType`
+  GraphDirection direction = 2;  // direction relative to the current node
+  GraphNodeMatch node = 3;       // constraints on the node reached by this hop
+}
+
+// Traversal direction of a hop relative to the current node.
+enum GraphDirection {
+  GRAPH_DIRECTION_UNSPECIFIED = 0; // treated as OUTGOING
+  GRAPH_DIRECTION_OUTGOING = 1;    // (current)-[edge]->(next)
+  GRAPH_DIRECTION_INCOMING = 2;    // (current)<-[edge]-(next)
+  GRAPH_DIRECTION_ANY = 3;         // (current)-[edge]-(next), either direction
+}
+
+// A single property equality filter. `key` is a property name validated as a
+// safe identifier by the gateway (resolved to a first-class column when it is
+// one — e.g. `NodeId`, `Label` — otherwise a JSON `Properties` key); `value`
+// binds as a query parameter and is never interpolated into query text.
+message PropertyFilter {
+  string key = 1;
+  google.protobuf.Value value = 2;
 }
 
 // Execution-log-section query: the agent's most recent steps in commit-
@@ -229,8 +273,10 @@ message SemanticMatch {
   double distance    = 3; // cosine distance; smaller is closer
 }
 
-// GQL result rows. A row's shape depends on the query's RETURN clause, so each
-// row is carried as a structured value rather than a fixed schema.
+// Graph traversal result rows. Each row carries the matched elements' key
+// fields (node ids and labels, and edge relationship types) keyed by gateway-
+// assigned binding names, so the shape is carried as a structured value rather
+// than a fixed schema.
 message GraphResult {
   repeated google.protobuf.Struct rows = 1;
 }
