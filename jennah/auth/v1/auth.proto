@@ -29,7 +29,7 @@ service AuthService {
   // jennah access token; returns the resolved caller identity.
   rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse) {
     option (google.api.http) = {
-      get: "/auth/v1/whoami"
+      get: "/v1/whoami"
     };
   }
 
@@ -76,7 +76,7 @@ service AuthService {
   // service principal scoped to the enterprise.
   rpc CreateApiKey(CreateApiKeyRequest) returns (CreateApiKeyResponse) {
     option (google.api.http) = {
-      post: "/auth/v1/apikeys"
+      post: "/v1/apikeys"
       body: "*"
     };
   }
@@ -87,7 +87,7 @@ service AuthService {
   // active enterprise.
   rpc ListApiKeys(ListApiKeysRequest) returns (ListApiKeysResponse) {
     option (google.api.http) = {
-      get: "/auth/v1/apikeys"
+      get: "/v1/apikeys"
     };
   }
 
@@ -100,7 +100,7 @@ service AuthService {
   // enterprise is treated as not found.
   rpc RevokeApiKey(RevokeApiKeyRequest) returns (RevokeApiKeyResponse) {
     option (google.api.http) = {
-      post: "/auth/v1/apikeys/{key_id}:revoke"
+      post: "/v1/apikeys/{key_id}:revoke"
     };
   }
 }
