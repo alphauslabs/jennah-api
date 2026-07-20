@@ -189,6 +189,18 @@ service AuthService {
       delete: "/v1/members/{user_id}"
     };
   }
+
+  // Updates mutable fields of the caller's active enterprise (currently just its
+  // display name). External (gateway) RPC. Authenticated AND gated to
+  // ROLE_ROOT/ROLE_ADMIN (resolved live from the Memberships table). The target
+  // is always the caller's active enterprise (from the token), never a path/body
+  // id, mirroring ListMembers/ChangeMemberRole.
+  rpc UpdateEnterprise(UpdateEnterpriseRequest) returns (UpdateEnterpriseResponse) {
+    option (google.api.http) = {
+      patch: "/v1/enterprise"
+      body: "*"
+    };
+  }
 }
 
 // Identity provider jennah supports for social login.
@@ -237,8 +249,9 @@ enum Role {
 // table), surfaced in Identity so a multi-enterprise user can pick which one to
 // switch into.
 message Membership {
-  string enterprise_id = 1;
-  Role   role          = 2;
+  string enterprise_id   = 1;
+  Role   role            = 2;
+  string enterprise_name = 3; // enterprise display name; may be empty
 }
 
 // The resolved jennah caller identity. jennah's own user id is authoritative;
@@ -578,3 +591,22 @@ message RemoveMemberRequest {
 
 // Response message for the AuthService.RemoveMember rpc.
 message RemoveMemberResponse {}
+
+// A jennah enterprise (the top-level tenant/organization). Minimal projection
+// returned by enterprise RPCs; the authoritative row lives in the Enterprises
+// table.
+message Enterprise {
+  string enterprise_id = 1;
+  string name          = 2; // display name; may be empty until set
+}
+
+// Request message for the AuthService.UpdateEnterprise rpc. Targets the caller's
+// active enterprise (from the access token), so it carries no id.
+message UpdateEnterpriseRequest {
+  string name = 1; // new display name; trimmed and required non-blank server-side (max 256)
+}
+
+// Response message for the AuthService.UpdateEnterprise rpc.
+message UpdateEnterpriseResponse {
+  Enterprise enterprise = 1; // the updated enterprise
+}
