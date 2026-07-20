@@ -9,6 +9,17 @@ option go_package = "github.com/alphauslabs/jennah-api/agent";
 
 // AgentService service definition.
 service AgentService {
+  // Lists the Jennah regions an agent workspace can be created in: the region
+  // allowlist is operator-owned topology, so a caller cannot know the valid
+  // `region` values for CreateAgent without asking. The response marks the
+  // default region (the one CreateAgent uses when `region` is omitted). Scoped
+  // to authenticated callers; the set is identical for every enterprise.
+  rpc ListRegions(ListRegionsRequest) returns (ListRegionsResponse) {
+    option (google.api.http) = {
+      get: "/v1/regions"
+    };
+  }
+
   // Creates a new agent workspace under the caller's enterprise. The home region
   // is resolved from the optional `region` field (a Jennah region identifier
   // validated against the configured allowlist) or the platform default region;
@@ -92,6 +103,23 @@ message AgentInstance {
   // provisioning phase, or the failure reason when status is FAILED). Empty for
   // a plain ACTIVE agent.
   string                    status_detail     = 7;
+}
+
+// A Jennah region an agent workspace can be pinned to. Regions are operator-
+// owned topology (the configured allowlist), identical for every enterprise.
+message Region {
+  string id         = 1; // Jennah region id, e.g. "us-central-1"
+  bool   is_default = 2; // true for the region CreateAgent uses when `region` is omitted
+}
+
+// Request message for the AgentService.ListRegions rpc. No parameters: the
+// region set is global, not tenant- or page-scoped.
+message ListRegionsRequest {}
+
+// Response message for the AgentService.ListRegions rpc.
+message ListRegionsResponse {
+  repeated Region regions        = 1; // configured regions, ordered by id
+  string          default_region = 2; // id of the default region (also flagged is_default in `regions`)
 }
 
 // Request message for the AgentService.CreateAgent rpc.
