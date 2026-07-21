@@ -110,6 +110,7 @@ message AgentInstance {
 message Region {
   string id         = 1; // Jennah region id, e.g. "us-central-1"
   bool   is_default = 2; // true for the region CreateAgent uses when `region` is omitted
+  string location   = 3; // free-form human-readable location, e.g. "Tokyo, Japan"
 }
 
 // Request message for the AgentService.ListRegions rpc. No parameters: the
