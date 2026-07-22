@@ -201,6 +201,70 @@ service AuthService {
       body: "*"
     };
   }
+
+  // --- RBAC roles & permissions (external/gateway RPCs; authenticated) ---
+
+  // Lists the fixed permission catalog: every grantable "group.resource:action"
+  // permission and whether it is management-class. External (gateway) RPC.
+  // Authenticated, but requires no specific permission — the catalog is
+  // non-sensitive metadata any member (or the console) may read to discover what
+  // is grantable.
+  rpc ListPermissions(ListPermissionsRequest) returns (ListPermissionsResponse) {
+    option (google.api.http) = {
+      get: "/v1/permissions"
+    };
+  }
+
+  // Defines a custom role in the caller's active enterprise: a named, explicit
+  // subset of the permission catalog. External (gateway) RPC. Authenticated AND
+  // requires the "iam.roles:manage" permission. The caller may grant only
+  // permissions they themselves hold (anti-escalation); the name must not
+  // collide with a built-in role (root/admin/member) and must be unique in the
+  // enterprise; wildcards are rejected (grants enumerate concrete permissions).
+  rpc CreateRole(CreateRoleRequest) returns (CreateRoleResponse) {
+    option (google.api.http) = {
+      post: "/v1/roles"
+      body: "*"
+    };
+  }
+
+  // Lists the caller enterprise's custom roles (built-in roles are not returned;
+  // they are code-defined and universal). External (gateway) RPC. Authenticated
+  // AND requires the "iam.roles:read" permission.
+  rpc ListRoles(ListRolesRequest) returns (ListRolesResponse) {
+    option (google.api.http) = {
+      get: "/v1/roles"
+    };
+  }
+
+  // Gets one custom role by id, scoped to the caller's active enterprise.
+  // External (gateway) RPC. Authenticated AND requires the "iam.roles:read"
+  // permission.
+  rpc GetRole(GetRoleRequest) returns (GetRoleResponse) {
+    option (google.api.http) = {
+      get: "/v1/roles/{role_id}"
+    };
+  }
+
+  // Replaces a custom role's name and permission set. External (gateway) RPC.
+  // Authenticated AND requires the "iam.roles:manage" permission, with the same
+  // anti-escalation and naming rules as CreateRole.
+  rpc UpdateRole(UpdateRoleRequest) returns (UpdateRoleResponse) {
+    option (google.api.http) = {
+      patch: "/v1/roles/{role_id}"
+      body: "*"
+    };
+  }
+
+  // Deletes a custom role. External (gateway) RPC. Authenticated AND requires the
+  // "iam.roles:manage" permission. Hard-fails with FAILED_PRECONDITION when the
+  // role is still assigned to any member — those members must be reassigned
+  // first, so a live membership can never dangle.
+  rpc DeleteRole(DeleteRoleRequest) returns (DeleteRoleResponse) {
+    option (google.api.http) = {
+      delete: "/v1/roles/{role_id}"
+    };
+  }
 }
 
 // Identity provider jennah supports for social login.
@@ -435,6 +499,11 @@ message ApiKey {
   google.protobuf.Timestamp expires_at         = 8;
   // Revocation time; unset while the key is active.
   google.protobuf.Timestamp revoked_at         = 9;
+  // RBAC permission scope the key authenticates with: the concrete
+  // "group.resource:action" permissions it holds, fixed at creation. Empty means
+  // the key carries no explicit scope and resolves to the member-equivalent
+  // default. Management-class permissions never appear here.
+  repeated string           scopes             = 10;
 }
 
 // Request message for the AuthService.CreateApiKey rpc.
@@ -449,6 +518,12 @@ message CreateApiKeyRequest {
   string label = 1; // human-readable label for the key
   // Optional absolute expiry. When unset the key never expires.
   google.protobuf.Timestamp expires_at = 2;
+  // Optional RBAC scope: the concrete "group.resource:action" permissions the
+  // key may exercise. Each MUST be a subset of the caller's own effective
+  // permissions (anti-escalation) and MUST NOT be a management-class permission
+  // (a key can never manage keys, members, roles, or enterprise settings). When
+  // empty, the key defaults to the member-equivalent data-plane scope.
+  repeated string scopes = 3;
 }
 
 // Response message for the AuthService.CreateApiKey rpc.
@@ -512,8 +587,14 @@ message Invitation {
 message Member {
   string user_id = 1; // jennah user id
   string email   = 2; // the member's primary email
-  Role   role    = 3; // role within the enterprise
+  // Built-in role within the enterprise. ROLE_UNSPECIFIED when the member holds
+  // a custom role instead — see custom_role_id.
+  Role   role    = 3;
   google.protobuf.Timestamp joined_at = 4; // Memberships row creation time
+  // Set when the member holds a custom RBAC role rather than a built-in one; it
+  // is the assigned role's id (join against ListRoles for its name/permissions).
+  // Empty for a built-in role, where `role` carries the assignment.
+  string custom_role_id = 5;
 }
 
 // Request message for the AuthService.InviteMember rpc.
@@ -581,9 +662,17 @@ message ListMembersResponse {
 }
 
 // Request message for the AuthService.ChangeMemberRole rpc.
+//
+// Assign either a built-in role (via `role`) or a custom RBAC role (via
+// `custom_role_id`). When `custom_role_id` is non-empty it takes precedence and
+// `role` is ignored; the id must name a custom role defined in the caller's
+// active enterprise, and the caller may assign it only if it grants no
+// permission the caller lacks (assignment anti-escalation). ROLE_ROOT is never
+// assignable by either field.
 message ChangeMemberRoleRequest {
-  string user_id = 1; // path parameter; a member of the caller's active enterprise
-  Role   role    = 2; // ROLE_ADMIN or ROLE_MEMBER (ROLE_ROOT is rejected)
+  string user_id        = 1; // path parameter; a member of the caller's active enterprise
+  Role   role           = 2; // built-in target: ROLE_ADMIN or ROLE_MEMBER (ROLE_ROOT is rejected)
+  string custom_role_id = 3; // optional: a custom role id in the active enterprise; takes precedence over `role`
 }
 
 // Response message for the AuthService.ChangeMemberRole rpc.
@@ -617,3 +706,93 @@ message UpdateEnterpriseRequest {
 message UpdateEnterpriseResponse {
   Enterprise enterprise = 1; // the updated enterprise
 }
+
+// A single entry in the RBAC permission catalog. `id` is the canonical
+// "group.resource:action" string (the value used in role grants and API-key
+// scopes); group/resource/action are its parsed parts, for grouping in a UI.
+message Permission {
+  string id         = 1; // e.g. "agent.agents:create"
+  string group      = 2; // e.g. "agent"
+  string resource   = 3; // e.g. "agents"
+  string action     = 4; // e.g. "create"
+  // True for a management-class permission (administrative; never grantable to
+  // an API key). False for a data-plane permission.
+  bool   management = 5;
+}
+
+// A custom, enterprise-scoped RBAC role: a named subset of the permission
+// catalog. Built-in roles (root/admin/member) are code-defined and are NOT
+// represented by this message.
+message CustomRole {
+  string role_id       = 1; // stable id (used in assignment and the role path)
+  // Enterprise that owns the role, from the caller's token. Echoed for clarity;
+  // never accepted from a request body.
+  string enterprise_id = 2;
+  string name          = 3; // unique within the enterprise; must not shadow a built-in role
+  repeated string permissions = 4; // explicit "group.resource:action" grants (no wildcards)
+  google.protobuf.Timestamp created_at = 5; // server-assigned commit timestamp
+  google.protobuf.Timestamp updated_at = 6; // last modification; unset until first update
+}
+
+// Request message for the AuthService.ListPermissions rpc.
+message ListPermissionsRequest {}
+
+// Response message for the AuthService.ListPermissions rpc.
+message ListPermissionsResponse {
+  repeated Permission permissions = 1; // the full catalog
+}
+
+// Request message for the AuthService.CreateRole rpc. The role is created in the
+// caller's active enterprise (from the token); there is no enterprise field.
+message CreateRoleRequest {
+  string name = 1; // unique within the enterprise; must not shadow a built-in role
+  repeated string permissions = 2; // explicit "group.resource:action" grants (no wildcards)
+}
+
+// Response message for the AuthService.CreateRole rpc.
+message CreateRoleResponse {
+  CustomRole role = 1; // the created role
+}
+
+// Request message for the AuthService.ListRoles rpc.
+message ListRolesRequest {
+  int32  page_size  = 1; // max roles to return; server picks a default when 0
+  string page_token = 2; // next_page_token from a prior response; empty for the first page
+}
+
+// Response message for the AuthService.ListRoles rpc.
+message ListRolesResponse {
+  repeated CustomRole roles           = 1; // custom roles only
+  string              next_page_token = 2; // empty when there are no more pages
+}
+
+// Request message for the AuthService.GetRole rpc.
+message GetRoleRequest {
+  string role_id = 1; // path parameter; must belong to the caller's active enterprise
+}
+
+// Response message for the AuthService.GetRole rpc.
+message GetRoleResponse {
+  CustomRole role = 1;
+}
+
+// Request message for the AuthService.UpdateRole rpc. Replaces the role's name
+// and permission set (full replacement, not a merge).
+message UpdateRoleRequest {
+  string role_id = 1; // path parameter; must belong to the caller's active enterprise
+  string name    = 2; // unique within the enterprise; must not shadow a built-in role
+  repeated string permissions = 3; // explicit "group.resource:action" grants (no wildcards)
+}
+
+// Response message for the AuthService.UpdateRole rpc.
+message UpdateRoleResponse {
+  CustomRole role = 1; // the updated role
+}
+
+// Request message for the AuthService.DeleteRole rpc.
+message DeleteRoleRequest {
+  string role_id = 1; // path parameter; must belong to the caller's active enterprise
+}
+
+// Response message for the AuthService.DeleteRole rpc.
+message DeleteRoleResponse {}
