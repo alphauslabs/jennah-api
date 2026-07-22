@@ -53,6 +53,24 @@ service MemoryService {
       body: "*"
     };
   }
+
+  // Replaces a currently-held graph fact WITHOUT destroying it (add-temporal-
+  // graph). In one read-write transaction it closes the prior edge's valid-time
+  // window (its invalid_at becomes the new edge's valid_at, its transaction-time
+  // start preserved) and inserts the replacement edge in the same
+  // (EnterpriseId, AgentInstanceId) slice with a fresh transaction-time start and
+  // an open window (unless new_edge.invalid_at is set). The prior edge stays
+  // queryable as history via an as_of graph query. Supersession is caller-driven:
+  // the platform never infers which facts conflict. new_edge.valid_at (the
+  // supersession boundary) is REQUIRED and new_edge.edge_id must differ from
+  // prior_edge_id; an unknown prior edge is NotFound and a reused new edge_id is
+  // AlreadyExists. This is the graph.supersede surface in the SDK.
+  rpc SupersedeEdge(SupersedeEdgeRequest) returns (SupersedeEdgeResponse) {
+    option (google.api.http) = {
+      post: "/v1/agents/{agent_instance_id}/graph/edges:supersede"
+      body: "*"
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -103,9 +121,11 @@ message VectorChunk {
 }
 
 // Graph-memory writes for one commit. Edges may only connect nodes within the
-// same (EnterpriseId, AgentInstanceId) slice. (Edges are point-in-time facts;
-// bi-temporal validity and caller-driven supersession are a follow-on change
-// and are intentionally not modeled here yet.)
+// same (EnterpriseId, AgentInstanceId) slice. Edges carry an optional bi-temporal
+// validity window (see GraphEdge.valid_at/invalid_at); a plain write with neither
+// field set records an always-current fact. Replacing a fact while preserving
+// history is the caller-driven MemoryService.SupersedeEdge operation, not a plain
+// re-write (a re-write of the same edge_id is an idempotent upsert, not a close).
 message GraphWrite {
   repeated GraphNode nodes = 1;
   repeated GraphEdge edges = 2;
@@ -131,6 +151,17 @@ message GraphEdge {
   // is read back via InspectMemory. Edges are written create-or-replace, so this
   // is the last write, not first creation. Ignored on CommitMemory.
   google.protobuf.Timestamp updated_at = 6;
+
+  // Bi-temporal valid-time window (add-temporal-graph), both optional on write.
+  // valid_at is when the fact became true in the world; when unset it defaults to
+  // the edge's server-assigned creation commit timestamp (so a naive write is an
+  // always-current fact). invalid_at is when the fact ceased to be true; unset
+  // (absent) means the fact is still held. A caller-supplied valid_at must not be
+  // future-dated. Transaction-time (created/expired) is server-assigned and not
+  // expressible here. These are write-time inputs; InspectMemory does not populate
+  // them on read-back in this change.
+  google.protobuf.Timestamp valid_at   = 7;
+  google.protobuf.Timestamp invalid_at = 8;
 }
 
 // The commit receipt: a commit timestamp plus how many rows were written per
@@ -210,6 +241,25 @@ message GraphQuery {
   GraphNodeMatch start = 1;      // anchor node set the traversal begins from
   repeated GraphStep steps = 2;  // single-hop traversals; empty returns the anchor set
   int32 limit = 3;               // max rows; <= 0 uses the default, clamped to a server max
+
+  // Bi-temporal time-travel over edge validity (add-temporal-graph). Absent
+  // as_of_valid means the default filter: only currently-held edges (invalid_at
+  // and expired are both open). A set as_of_valid switches to valid-time interval
+  // containment — edges whose valid-time window contains that instant — so the
+  // traversal reconstructs the facts believed true at that point in time. A set
+  // as_of_tx additionally constrains transaction-time ("as known at as_of_tx"),
+  // and is only meaningful together with as_of_valid.
+  //
+  // These are DELIBERATELY DISTINCT from QueryMemoryRequest.as_of. That field is
+  // the physical read snapshot (Spanner ReadTimestamp), bounded by the version-
+  // retention window (~1h) and applied to every section's physical read. Graph
+  // valid-time must reach arbitrarily far back, so it is evaluated as a bound
+  // predicate over the validity columns at the current snapshot — never by moving
+  // the physical read timestamp. Both bounds bind as query parameters; the clamp
+  // is injected onto every hop exactly like the tenant/agent clamp and cannot be
+  // omitted or widened.
+  google.protobuf.Timestamp as_of_valid = 4;
+  google.protobuf.Timestamp as_of_tx    = 5;
 }
 
 // A node-pattern constraint. `label` optionally filters the node's semantic
@@ -369,4 +419,32 @@ message VectorChunkInfo {
 message GraphInspectResult {
   repeated GraphNode nodes = 1;
   repeated GraphEdge edges = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Supersede
+// ---------------------------------------------------------------------------
+
+// Request for MemoryService.SupersedeEdge.
+message SupersedeEdgeRequest {
+  string agent_instance_id = 1; // route path parameter; never read from the body
+
+  // The currently-held edge to close. Resolved within the caller's slice; an
+  // unknown id is NotFound (never a cross-slice touch).
+  string prior_edge_id = 2;
+
+  // The replacement fact, inserted in the same slice. new_edge.valid_at is
+  // REQUIRED — it is the supersession boundary (the prior edge's invalid_at and
+  // the new edge's valid_at) and must be a concrete timestamp. new_edge.edge_id
+  // must be set and differ from prior_edge_id (the replacement is inserted, not
+  // upserted, so a reused id is rejected). new_edge.invalid_at may be set to open
+  // the replacement already closed; its transaction-time is server-assigned. The
+  // updated_at field is ignored.
+  GraphEdge new_edge = 3;
+}
+
+// The supersession receipt: the commit timestamp of the transaction that closed
+// the prior edge and inserted the replacement.
+message SupersedeEdgeResponse {
+  google.protobuf.Timestamp commit_timestamp = 1;
 }
