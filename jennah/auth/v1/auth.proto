@@ -316,6 +316,10 @@ message Membership {
   string enterprise_id   = 1;
   Role   role            = 2;
   string enterprise_name = 3; // enterprise display name; may be empty
+  // Set when the caller holds a custom RBAC role in this enterprise rather than a
+  // built-in one; it is the assigned role's id (join against ListRoles for its
+  // name/permissions). Empty for a built-in role, where `role` carries it.
+  string custom_role_id  = 4;
 }
 
 // The resolved jennah caller identity. jennah's own user id is authoritative;
