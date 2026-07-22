@@ -366,6 +366,12 @@ message WhoAmIRequest {}
 message WhoAmIResponse {
   Identity    identity    = 1;
   Entitlement entitlement = 2;
+  // The caller's effective permissions in the active enterprise, resolved
+  // server-side from their membership role (built-in or custom) — never from the
+  // token. Each is a concrete "group.resource:action" catalog grant. Empty when
+  // auth/RBAC is not configured. A client uses this to enable/disable admin
+  // controls precisely, instead of inferring capability from the built-in role.
+  repeated string permissions = 3;
 }
 
 // Request message for the AuthService.StartLogin rpc.
