@@ -190,6 +190,24 @@ service AuthService {
     };
   }
 
+  // Transfers the caller's active enterprise's ROLE_ROOT to another member of
+  // that enterprise: the target becomes ROLE_ROOT and the caller becomes
+  // ROLE_ADMIN, atomically. External (gateway) RPC. Authenticated AND authorized
+  // by identity — ONLY the enterprise's current ROLE_ROOT may call it. Holding
+  // every permission is not sufficient: a ROLE_ADMIN (whose permission set is
+  // identical to ROLE_ROOT's) is refused, and so is an API-key caller. This is
+  // the only authority ROLE_ROOT holds that ROLE_ADMIN does not, and the only way
+  // ROLE_ROOT ever moves — it remains non-grantable by ChangeMemberRole and by
+  // invitation. The target must already be a live member (a user_id, never an
+  // email); no membership is created and no pending offer is minted. Takes effect
+  // without re-minting a token, because roles are resolved live server-side.
+  rpc TransferRoot(TransferRootRequest) returns (TransferRootResponse) {
+    option (google.api.http) = {
+      post: "/v1/org:transferRoot"
+      body: "*"
+    };
+  }
+
   // Updates mutable fields of the caller's active enterprise (currently just its
   // display name). External (gateway) RPC. Authenticated AND gated to
   // ROLE_ROOT/ROLE_ADMIN (resolved live from the Memberships table). The target
@@ -197,7 +215,7 @@ service AuthService {
   // id, mirroring ListMembers/ChangeMemberRole.
   rpc UpdateEnterprise(UpdateEnterpriseRequest) returns (UpdateEnterpriseResponse) {
     option (google.api.http) = {
-      patch: "/v1/enterprise"
+      patch: "/v1/org"
       body: "*"
     };
   }
@@ -697,6 +715,27 @@ message RemoveMemberRequest {
 
 // Response message for the AuthService.RemoveMember rpc.
 message RemoveMemberResponse {}
+
+// Request message for the AuthService.TransferRoot rpc.
+//
+// The enterprise is always the caller's active enterprise (from the token),
+// never a request field, mirroring ListMembers/ChangeMemberRole/UpdateEnterprise.
+// The target is addressed by user id and MUST already be a live member of that
+// enterprise: an unknown id is NOT_FOUND, so a typo cannot land ownership on some
+// other real person the way a mistyped email address could.
+message TransferRootRequest {
+  string new_root_user_id = 1; // a current member of the caller's active enterprise; must differ from the caller
+}
+
+// Response message for the AuthService.TransferRoot rpc.
+//
+// Echoes both sides of the swap so a client can update its member list without a
+// refetch: `new_root` now holds ROLE_ROOT, `previous_root` (the caller) now holds
+// ROLE_ADMIN.
+message TransferRootResponse {
+  Member new_root      = 1; // the target, now ROLE_ROOT
+  Member previous_root = 2; // the caller, now ROLE_ADMIN
+}
 
 // A jennah enterprise (the top-level tenant/organization). Minimal projection
 // returned by enterprise RPCs; the authoritative row lives in the Enterprises
