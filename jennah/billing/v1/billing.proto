@@ -252,11 +252,16 @@ message BindMarketplaceRegistrationResponse {
   // The enterprise's effective tier after the bind.
   string tier = 2;
 
-  // Always true on success: a tier change invalidates the enterprise's outstanding
-  // access tokens (they carry the tier and are verified with no database lookup),
-  // so the client must refresh before the new tier takes effect. Stated explicitly
-  // rather than left implicit — a customer who just paid and is still blocked files
-  // a ticket.
+  // True when this bind actually moved the tier. A tier change invalidates the
+  // enterprise's outstanding access tokens (they carry the tier and are verified
+  // with no database lookup), so the client must refresh before the new plan takes
+  // effect. Stated explicitly rather than left implicit — a customer who just paid
+  // and is still blocked files a ticket.
+  //
+  // NOT always true. Re-binding a subscription already attached to the same
+  // enterprise is idempotent success and changes nothing, so no refresh is needed;
+  // buyers re-enter through the provider's "set up your account" link routinely. A
+  // client that refreshes unconditionally rotates a session token for no reason.
   bool access_token_refresh_required = 3;
 }
 
