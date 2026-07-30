@@ -1,0 +1,279 @@
+syntax = "proto3";
+
+package jennahapi.billing.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/alphauslabs/jennah-api/billing";
+
+// BillingService is the provider-neutral billing surface. It carries the
+// caller-facing read of an enterprise's plan, the authenticated bind that
+// attaches an external subscription to an enterprise, and the internal
+// provider-driven registration RPC the public HTTP edge calls.
+//
+// There is deliberately NO notification RPC. AWS Marketplace delivers agreement
+// and license events to the seller account's own EventBridge bus, so the backend
+// consumes them by polling an SQS queue rather than by serving an inbound
+// endpoint — which removes a public route, signature verification, and a
+// subscription handshake from the surface entirely.
+//
+// Machine-readable failures. Every rejection below carries a
+// `google.rpc.ErrorInfo` whose `domain` is "jennah.alphaus.cloud" and whose
+// `reason` is one of the constants named in each RPC's comment. A client keys on
+// the reason, never on the human-readable message.
+service BillingService {
+  // Reads the caller's active enterprise billing state: its effective tier, which
+  // source owns that tier, and every subscription bound to it (plural — one AWS
+  // account can hold several concurrent agreements for the same product). External
+  // (gateway) RPC. Authenticated.
+  //
+  // It stays callable when the caller's tier is unusable (an expired trial or a
+  // cancelled subscription): it is on the entitlement interceptor's exempt
+  // allowlist, because a blocked customer must be able to reach the state that
+  // explains how to recover.
+  //
+  // When `externally_managed` is true the client MUST NOT offer an in-app plan
+  // change — a foreign source's tier write is rejected server-side, so the button
+  // would be one that cannot work. Send the user to `manage_url` instead.
+  rpc GetBillingState(GetBillingStateRequest) returns (GetBillingStateResponse) {
+    option (google.api.http) = {
+      get: "/v1/billing"
+    };
+  }
+
+  // Binds the subscription behind a single-use registration handle to the caller's
+  // active enterprise and applies its resolved tier. External (gateway) RPC.
+  // Authenticated AND gated to ROLE_ROOT/ROLE_ADMIN on the active enterprise,
+  // resolved live from the Memberships table. Also on the entitlement exempt
+  // allowlist, since this is the call that restores a blocked caller's access.
+  //
+  // The handle is a bearer capability with a deliberately small blast radius:
+  // whoever presents it attaches that subscription to THEIR active enterprise.
+  // AWS gives us no proof of the buyer's jennah identity, so the mitigations are a
+  // minutes-long TTL, single use, storage as a hash, the admin-role requirement
+  // above, and an operator rebind path — not a claim that the class is eliminated.
+  //
+  // Binding the same subscription to the same enterprise again is idempotent
+  // success: buyers re-enter through AWS's "Set up your account" button routinely.
+  //
+  // Rejections:
+  //   FAILED_PRECONDITION / REGISTRATION_HANDLE_INVALID — expired, already
+  //     consumed, or unknown. Not distinguished from one another on purpose, so a
+  //     caller cannot probe which handles exist.
+  //   ALREADY_EXISTS / SUBSCRIPTION_BOUND_ELSEWHERE — bound to a different
+  //     enterprise. The existing binding is NOT moved; recovery is an operator
+  //     action with a recorded reason.
+  //   PERMISSION_DENIED / ENTERPRISE_ADMIN_REQUIRED — the caller is a member
+  //     without an administrator role on the active enterprise.
+  //   FAILED_PRECONDITION / BILLING_SOURCE_CONFLICT — the enterprise's tier is
+  //     already owned by a DIFFERENT billing source. (A second subscription from
+  //     the SAME source is accepted, not refused.)
+  rpc BindMarketplaceRegistration(BindMarketplaceRegistrationRequest) returns (BindMarketplaceRegistrationResponse) {
+    option (google.api.http) = {
+      post: "/v1/billing/aws:bind"
+      body: "*"
+    };
+  }
+
+  // --- Internal provider-driven RPC (no HTTP annotation; proxy-to-backend only) ---
+
+  // Exchanges an AWS Marketplace registration token for the buyer's marketplace
+  // identity, persists the subscription in the unbound state, mints a single-use
+  // binding handle, and returns the console URL to redirect the browser to.
+  //
+  // Unauthenticated (interceptor allowlist), because the caller is AWS rather than
+  // a jennah user: AWS POSTs the buyer's browser to the public registration
+  // endpoint with no cookie and no bearer credential, and the buyer may have no
+  // jennah account at all. Exemption from bearer-token auth is not exemption from
+  // authentication — this method authenticates its caller by exchanging the
+  // provider-issued token with AWS, and rejects the request when that fails.
+  //
+  // The resolve-and-persist-before-login ordering is the point: the token is
+  // short-lived and cannot survive an interactive signup, and the buyer is billed
+  // from contract creation whether or not they ever finish registering. After this
+  // returns, every remaining step is retryable and nothing is time-critical.
+  //
+  // Rejections, split so the edge can tell a retry from a dead end:
+  //   INVALID_ARGUMENT / REGISTRATION_TOKEN_INVALID — missing or malformed token,
+  //     or one AWS refuses. Permanent; do not retry.
+  //   FAILED_PRECONDITION / PRODUCT_CODE_NOT_CONFIGURED — the token resolved to a
+  //     product code this deployment has no mapping for. Permanent, and no
+  //     subscription record is written.
+  //   UNAVAILABLE — AWS was unreachable or throttled. Retryable, and no handle is
+  //     minted and no partial subscription is left behind. The agreement still
+  //     arrives independently as an EventBridge event, so no revenue is lost.
+  //   UNIMPLEMENTED — the deployment has no billing configuration at all.
+  rpc ResolveMarketplaceRegistration(ResolveMarketplaceRegistrationRequest) returns (ResolveMarketplaceRegistrationResponse);
+}
+
+// Which system owns an enterprise's tier. Ownership is exclusive: a write from a
+// source that does not own the tier is rejected, which is what keeps two billing
+// integrations from fighting over one enterprise.
+//
+// A client MUST NOT decide whether to show an in-app plan change by comparing
+// against this enum — a source added after the client was built arrives as
+// BILLING_SOURCE_UNSPECIFIED. Use `externally_managed`, which is computed
+// server-side and stays correct across versions.
+enum BillingSource {
+  // Unknown to this client's proto version — treat as external if
+  // `externally_managed` says so.
+  BILLING_SOURCE_UNSPECIFIED = 0;
+  // Nobody is billing this enterprise yet: a trial. Stored as empty rather than a
+  // literal, and it is the state the first paid subscription acquires rather than
+  // contends for.
+  BILLING_SOURCE_PLATFORM = 1;
+  // A human intervention through the operator CLI. A source like any other: it
+  // must own the tier or take ownership explicitly, so a support fix is as
+  // auditable as a provider event.
+  BILLING_SOURCE_OPERATOR = 2;
+  // AWS Marketplace.
+  BILLING_SOURCE_AWS_MARKETPLACE = 3;
+}
+
+// Lifecycle of one external subscription. The two non-obvious states exist
+// because an absence of entitlements is ambiguous and a presence we cannot
+// interpret is not a cancellation.
+enum SubscriptionState {
+  SUBSCRIPTION_STATE_UNSPECIFIED = 0;
+  // Resolved and persisted, but not yet attached to any enterprise. A normal,
+  // persistent state — AWS bills from contract creation, so a buyer who abandons
+  // registration still has a paid subscription that must not be lost.
+  SUBSCRIPTION_STATE_UNBOUND = 1;
+  // Bound to an enterprise with an active entitlement.
+  SUBSCRIPTION_STATE_ACTIVE = 2;
+  // An authoritative read returned no active entitlement, but the subscription is
+  // still within the grace window of its last known expiration — where "renewing
+  // right now" and "ended" are the same observation. The tier is held and the
+  // subscription re-read; only an absence that outlasts the window cancels.
+  SUBSCRIPTION_STATE_PENDING_VERIFICATION = 3;
+  // Something needs a human: entitlements are present but none maps to a
+  // configured tier, or the purchased quantity is greater than one. The tier is
+  // left unchanged in both cases — a dimension we do not recognize must never be
+  // read as a cancellation.
+  SUBSCRIPTION_STATE_NEEDS_ATTENTION = 4;
+  // The subscription ended: either an explicit end event from the provider, or an
+  // absence confirmed past the grace window.
+  SUBSCRIPTION_STATE_CANCELLED = 5;
+}
+
+// One subscription bound to an enterprise. The field names are provider-neutral
+// so a second billing source needs no second message; each comment names the AWS
+// Marketplace meaning.
+message BoundSubscription {
+  BillingSource source = 1;
+
+  // The provider's subscription identity. For AWS Marketplace this is the
+  // agreement's LicenseArn — the identity used in logs, operator subcommands, and
+  // support conversations. It is the agreement, not the buyer: one AWS account can
+  // hold several concurrent agreements for the same product.
+  string subscription_id = 2;
+
+  // A provider-side account identifier the buyer can actually recognize. For AWS
+  // Marketplace this is the buyer's AWS account id, which is what makes a support
+  // claim ("that's my company's account") verifiable against a recorded fact.
+  string account_ref = 3;
+
+  // The provider-side product identifier this subscription was resolved under. For
+  // AWS Marketplace this is the product code, and it selects which configured
+  // dimension mapping applies — a second listing is a second product code.
+  string product_ref = 4;
+
+  // The tier resolved for THIS subscription. An enterprise holding several active
+  // subscriptions is entitled at the highest-ranked tier across them, which is
+  // reported as `tier` on GetBillingStateResponse.
+  string tier = 5;
+
+  // Last known entitlement expiration. For a monthly contract this advances on
+  // every renewal, so it is a boundary every customer crosses each cycle rather
+  // than a once-a-year event.
+  google.protobuf.Timestamp expires_at = 6;
+
+  SubscriptionState state = 7;
+
+  // The purchased entitlement quantity. Recorded and surfaced but NOT enforced —
+  // seat limits are out of scope — and it never affects the resolved tier. A value
+  // above one is flagged for attention, because a buyer billed for five units and
+  // silently receiving one unit's service is the failure worth being loud about.
+  int64 quantity = 8;
+}
+
+// Request message for the BillingService.GetBillingState rpc.
+message GetBillingStateRequest {}
+
+// Response message for the BillingService.GetBillingState rpc.
+message GetBillingStateResponse {
+  // The active enterprise's effective tier — the highest-ranked tier across its
+  // active subscriptions, or its platform-assigned tier when nothing is bound.
+  string tier = 1;
+
+  // The source that owns the tier, for display.
+  BillingSource source = 2;
+
+  // The raw owning-source identifier as stored, empty for a platform-owned (trial)
+  // enterprise. Present so a source newer than the client's proto version is still
+  // nameable in a support conversation and in logs.
+  string source_id = 3;
+
+  // True when the tier is owned by an external billing source. This is the field a
+  // client switches on: when it is true, suppress every in-app plan-change
+  // affordance and direct the user to `manage_url`. Computed server-side so it
+  // stays correct for a source the client does not know about.
+  bool externally_managed = 4;
+
+  // Every subscription bound to the active enterprise. Plural because concurrent
+  // agreements are legitimate: a second team buying separately, an early
+  // re-purchase, or a channel-partner offer alongside a direct one. Empty for a
+  // trial enterprise.
+  repeated BoundSubscription subscriptions = 5;
+
+  // Where the plan is managed when it is externally owned — the AWS Marketplace
+  // subscription page for a marketplace-owned enterprise. Also the renewal path
+  // shown when the tier is the terminal cancelled one, so a former subscriber gets
+  // a re-subscribe link rather than an expired-trial prompt. Empty when the plan is
+  // platform-owned.
+  string manage_url = 6;
+}
+
+// Request message for the BillingService.BindMarketplaceRegistration rpc.
+message BindMarketplaceRegistrationRequest {
+  // The single-use handle carried on the redirect from the public registration
+  // endpoint. Short-lived, consumed on the first successful bind, and stored only
+  // as a hash so a database read cannot recover a usable handle.
+  string handle = 1;
+}
+
+// Response message for the BillingService.BindMarketplaceRegistration rpc.
+message BindMarketplaceRegistrationResponse {
+  // The subscription as bound, so the console can render the resulting plan
+  // without a second call.
+  BoundSubscription subscription = 1;
+
+  // The enterprise's effective tier after the bind.
+  string tier = 2;
+
+  // Always true on success: a tier change invalidates the enterprise's outstanding
+  // access tokens (they carry the tier and are verified with no database lookup),
+  // so the client must refresh before the new tier takes effect. Stated explicitly
+  // rather than left implicit — a customer who just paid and is still blocked files
+  // a ticket.
+  bool access_token_refresh_required = 3;
+}
+
+// Request message for the BillingService.ResolveMarketplaceRegistration rpc.
+message ResolveMarketplaceRegistrationRequest {
+  // The `x-amzn-marketplace-token` form field, verbatim as AWS posted it.
+  string registration_token = 1;
+}
+
+// Response message for the BillingService.ResolveMarketplaceRegistration rpc.
+message ResolveMarketplaceRegistrationResponse {
+  // The absolute console URL to redirect the browser to, with the single-use
+  // binding handle already embedded. The backend builds it, because the backend is
+  // what holds the configured console origin and validates it against the app-
+  // redirect allowlist; the edge only issues the 302.
+  //
+  // The handle is deliberately NOT returned as a separate field. It is a bearer
+  // capability, and there is no consumer for it apart from this URL.
+  string redirect_url = 1;
+}
