@@ -15,9 +15,7 @@ service AgentService {
   // default region (the one CreateAgent uses when `region` is omitted). Scoped
   // to authenticated callers; the set is identical for every enterprise.
   rpc ListRegions(ListRegionsRequest) returns (ListRegionsResponse) {
-    option (google.api.http) = {
-      get: "/v1/regions"
-    };
+    option (google.api.http) = {get: "/v1/regions"};
   }
 
   // Creates a new agent workspace under the caller's enterprise. The home region
@@ -46,18 +44,14 @@ service AgentService {
   // still provisioning. An agent_instance_id not owned by the caller's
   // enterprise is treated as not found.
   rpc GetAgent(GetAgentRequest) returns (GetAgentResponse) {
-    option (google.api.http) = {
-      get: "/v1/agents/{agent_instance_id}"
-    };
+    option (google.api.http) = {get: "/v1/agents/{agent_instance_id}"};
   }
 
   // Lists the caller enterprise's agent workspaces, most-recent first, with
   // page_size/page_token pagination. Scoped to the token's EnterpriseId; never
   // returns another enterprise's agents.
   rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse) {
-    option (google.api.http) = {
-      get: "/v1/agents"
-    };
+    option (google.api.http) = {get: "/v1/agents"};
   }
 
   // Deletes an agent workspace the caller owns with a single tenant-scoped
@@ -66,9 +60,7 @@ service AgentService {
   // type row counts removed. An agent_instance_id not owned by the caller's
   // enterprise is treated as not found.
   rpc DeleteAgent(DeleteAgentRequest) returns (DeleteAgentResponse) {
-    option (google.api.http) = {
-      delete: "/v1/agents/{agent_instance_id}"
-    };
+    option (google.api.http) = {delete: "/v1/agents/{agent_instance_id}"};
   }
 }
 
@@ -78,7 +70,7 @@ enum AgentStatus {
   // Ready for use: the region's data-plane instance is provisioned and the
   // AgentInstances row exists in the data plane.
   AGENT_STATUS_ACTIVE = 1;
-  AGENT_STATUS_PAUSED    = 2;
+  AGENT_STATUS_PAUSED = 2;
   AGENT_STATUS_COMPLETED = 3;
   // Provisioning is still in flight (the region's data-plane instance is being
   // created). No data-plane row exists yet; poll GetAgent until ACTIVE.
@@ -93,24 +85,24 @@ enum AgentStatus {
 message AgentInstance {
   // Enterprise that owns this agent, resolved from the caller's token. Echoed
   // for clarity; it is never accepted from a request body.
-  string                    enterprise_id     = 1;
-  string                    agent_instance_id = 2; // unique within the enterprise
-  string                    agent_name        = 3;
-  string                    region            = 4; // Jennah region id, e.g. "us-east-1"
-  AgentStatus               status            = 5;
-  google.protobuf.Timestamp created_at        = 6; // server-assigned commit timestamp
+  string enterprise_id = 1;
+  string agent_instance_id = 2; // unique within the enterprise
+  string agent_name = 3;
+  string region = 4; // Jennah region id, e.g. "us-east-1"
+  AgentStatus status = 5;
+  google.protobuf.Timestamp created_at = 6; // server-assigned commit timestamp
   // Human-readable detail for a non-terminal/failed status (e.g. the region
   // provisioning phase, or the failure reason when status is FAILED). Empty for
   // a plain ACTIVE agent.
-  string                    status_detail     = 7;
+  string status_detail = 7;
 }
 
 // A Jennah region an agent workspace can be pinned to. Regions are operator-
 // owned topology (the configured allowlist), identical for every enterprise.
 message Region {
-  string id         = 1; // Jennah region id, e.g. "us-central-1"
-  bool   is_default = 2; // true for the region CreateAgent uses when `region` is omitted
-  string location   = 3; // free-form human-readable location, e.g. "Tokyo, Japan"
+  string id = 1; // Jennah region id, e.g. "us-central-1"
+  bool is_default = 2; // true for the region CreateAgent uses when `region` is omitted
+  string location = 3; // free-form human-readable location, e.g. "Tokyo, Japan"
 }
 
 // Request message for the AgentService.ListRegions rpc. No parameters: the
@@ -119,17 +111,17 @@ message ListRegionsRequest {}
 
 // Response message for the AgentService.ListRegions rpc.
 message ListRegionsResponse {
-  repeated Region regions        = 1; // configured regions, ordered by id
-  string          default_region = 2; // id of the default region (also flagged is_default in `regions`)
+  repeated Region regions = 1; // configured regions, ordered by id
+  string default_region = 2; // id of the default region (also flagged is_default in `regions`)
 }
 
 // Request message for the AgentService.CreateAgent rpc.
 message CreateAgentRequest {
   string agent_instance_id = 1; // caller-chosen id, unique within the enterprise
-  string agent_name        = 2;
+  string agent_name = 2;
   // Optional Jennah region identifier (e.g. "us-east-1"). Must be in the
   // configured region allowlist; when empty the platform default region is used.
-  string region            = 3;
+  string region = 3;
 }
 
 // Response message for the AgentService.CreateAgent rpc.
@@ -149,14 +141,14 @@ message GetAgentResponse {
 
 // Request message for the AgentService.ListAgents rpc.
 message ListAgentsRequest {
-  int32  page_size  = 1; // max agents to return; server picks a default when 0
+  int32 page_size = 1; // max agents to return; server picks a default when 0
   string page_token = 2; // next_page_token from a prior response; empty for the first page
 }
 
 // Response message for the AgentService.ListAgents rpc.
 message ListAgentsResponse {
-  repeated AgentInstance agents          = 1;
-  string                 next_page_token = 2; // empty when there are no more pages
+  repeated AgentInstance agents = 1;
+  string next_page_token = 2; // empty when there are no more pages
 }
 
 // Request message for the AgentService.DeleteAgent rpc.
@@ -169,9 +161,9 @@ message DeleteAgentRequest {
 // The erasure receipt: a commit timestamp plus how many rows were removed per
 // memory type, so a caller can evidence a complete, atomic erasure.
 message DeleteAgentResponse {
-  google.protobuf.Timestamp deleted_at         = 1; // cascade-delete commit timestamp
-  int64                     execution_log_rows = 2;
-  int64                     vector_rows        = 3;
-  int64                     graph_node_rows    = 4;
-  int64                     graph_edge_rows    = 5;
+  google.protobuf.Timestamp deleted_at = 1; // cascade-delete commit timestamp
+  int64 execution_log_rows = 2;
+  int64 vector_rows = 3;
+  int64 graph_node_rows = 4;
+  int64 graph_edge_rows = 5;
 }

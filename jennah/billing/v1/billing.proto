@@ -38,9 +38,7 @@ service BillingService {
   // change — a foreign source's tier write is rejected server-side, so the button
   // would be one that cannot work. Send the user to `manage_url` instead.
   rpc GetBillingState(GetBillingStateRequest) returns (GetBillingStateResponse) {
-    option (google.api.http) = {
-      get: "/v1/billing"
-    };
+    option (google.api.http) = {get: "/v1/billing"};
   }
 
   // Binds the subscription behind a single-use registration handle to the caller's
@@ -102,8 +100,9 @@ service BillingService {
   //     product code this deployment has no mapping for. Permanent, and no
   //     subscription record is written.
   //   UNAVAILABLE — AWS was unreachable or throttled. Retryable, and no handle is
-  //     minted and no partial subscription is left behind. The agreement still
-  //     arrives independently as an EventBridge event, so no revenue is lost.
+  //     minted and no partial subscription is left behind. The purchase still
+  //     reaches us independently as a marketplace notification, so no revenue is
+  //     lost by a failed registration.
   //   UNIMPLEMENTED — the deployment has no billing configuration at all.
   rpc ResolveMarketplaceRegistration(ResolveMarketplaceRegistrationRequest) returns (ResolveMarketplaceRegistrationResponse);
 }

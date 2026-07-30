@@ -100,17 +100,17 @@ message CommitMemoryRequest {
 // read; `timestamp` is OUTPUT-ONLY (server-assigned) and populated when the
 // step is read back via QueryMemory's log section.
 message ExecutionLogStep {
-  string step_id         = 1; // caller-chosen; unique within the agent slice
+  string step_id = 1; // caller-chosen; unique within the agent slice
   string thought_process = 2;
-  string tool_used       = 3;
-  string tool_input      = 4;
-  string tool_output     = 5;
+  string tool_used = 3;
+  string tool_input = 4;
+  string tool_output = 5;
   google.protobuf.Timestamp timestamp = 6; // output-only; server commit timestamp
 }
 
 // A semantic-memory chunk to upsert.
 message VectorChunk {
-  string chunk_id    = 1; // caller-chosen; unique within the agent slice
+  string chunk_id = 1; // caller-chosen; unique within the agent slice
   string raw_content = 2;
   // Optional precomputed embedding. When empty, the gateway generates it from
   // raw_content server-side (Vertex AI, task_type RETRIEVAL_DOCUMENT). When
@@ -133,7 +133,7 @@ message GraphWrite {
 
 message GraphNode {
   string node_id = 1; // caller-chosen; unique within the agent slice
-  string label   = 2;
+  string label = 2;
   google.protobuf.Struct properties = 3; // free-form JSON properties
   // Output-only: the row's last-write commit timestamp, populated when the node
   // is read back via InspectMemory. Nodes are written create-or-replace, so this
@@ -142,9 +142,9 @@ message GraphNode {
 }
 
 message GraphEdge {
-  string edge_id           = 1; // caller-chosen; unique within the agent slice
-  string source_node_id    = 2; // must reference a GraphNode in the same slice
-  string target_node_id    = 3; // must reference a GraphNode in the same slice
+  string edge_id = 1; // caller-chosen; unique within the agent slice
+  string source_node_id = 2; // must reference a GraphNode in the same slice
+  string target_node_id = 3; // must reference a GraphNode in the same slice
   string relationship_type = 4;
   google.protobuf.Struct properties = 5; // free-form JSON properties
   // Output-only: the row's last-write commit timestamp, populated when the edge
@@ -160,7 +160,7 @@ message GraphEdge {
   // future-dated. Transaction-time (created/expired) is server-assigned and not
   // expressible here. These are write-time inputs; InspectMemory does not populate
   // them on read-back in this change.
-  google.protobuf.Timestamp valid_at   = 7;
+  google.protobuf.Timestamp valid_at = 7;
   google.protobuf.Timestamp invalid_at = 8;
 }
 
@@ -169,9 +169,9 @@ message GraphEdge {
 message CommitMemoryResponse {
   google.protobuf.Timestamp commit_timestamp = 1;
   int64 execution_log_rows = 2;
-  int64 vector_rows        = 3;
-  int64 graph_node_rows    = 4;
-  int64 graph_edge_rows    = 5;
+  int64 vector_rows = 3;
+  int64 graph_node_rows = 4;
+  int64 graph_edge_rows = 5;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,8 +221,8 @@ enum FusionDirection {
 // below `limit`).
 message SemanticQuery {
   repeated float embedding = 1; // precomputed query embedding; width must match the db
-  string         query_text = 2; // embedded server-side when `embedding` is absent
-  int32          limit      = 3; // max matches to return
+  string query_text = 2; // embedded server-side when `embedding` is absent
+  int32 limit = 3; // max matches to return
 }
 
 // Graph-section query: a STRUCTURED traversal over the agent's
@@ -238,9 +238,9 @@ message SemanticQuery {
 // A query is an anchor node set plus zero or more single-hop traversals. Each
 // hop is one `GraphStep`; multi-hop traversal is expressed as successive steps.
 message GraphQuery {
-  GraphNodeMatch start = 1;      // anchor node set the traversal begins from
-  repeated GraphStep steps = 2;  // single-hop traversals; empty returns the anchor set
-  int32 limit = 3;               // max rows; <= 0 uses the default, clamped to a server max
+  GraphNodeMatch start = 1; // anchor node set the traversal begins from
+  repeated GraphStep steps = 2; // single-hop traversals; empty returns the anchor set
+  int32 limit = 3; // max rows; <= 0 uses the default, clamped to a server max
 
   // Bi-temporal time-travel over edge validity (add-temporal-graph). Absent
   // as_of_valid means the default filter: only currently-held edges (invalid_at
@@ -259,7 +259,7 @@ message GraphQuery {
   // is injected onto every hop exactly like the tenant/agent clamp and cannot be
   // omitted or widened.
   google.protobuf.Timestamp as_of_valid = 4;
-  google.protobuf.Timestamp as_of_tx    = 5;
+  google.protobuf.Timestamp as_of_tx = 5;
 }
 
 // A node-pattern constraint. `label` optionally filters the node's semantic
@@ -267,23 +267,23 @@ message GraphQuery {
 // The gateway always adds the (EnterpriseId, AgentInstanceId) clamp to the
 // generated element — it is NOT expressible here and cannot be overridden.
 message GraphNodeMatch {
-  string label = 1;                    // optional equality filter on the node's `Label`
+  string label = 1; // optional equality filter on the node's `Label`
   repeated PropertyFilter filters = 2; // optional property equality filters (values bound)
 }
 
 // One single-hop traversal to an adjacent node.
 message GraphStep {
-  string relationship_type = 1;  // optional equality filter on the edge's `RelationshipType`
-  GraphDirection direction = 2;  // direction relative to the current node
-  GraphNodeMatch node = 3;       // constraints on the node reached by this hop
+  string relationship_type = 1; // optional equality filter on the edge's `RelationshipType`
+  GraphDirection direction = 2; // direction relative to the current node
+  GraphNodeMatch node = 3; // constraints on the node reached by this hop
 }
 
 // Traversal direction of a hop relative to the current node.
 enum GraphDirection {
   GRAPH_DIRECTION_UNSPECIFIED = 0; // treated as OUTGOING
-  GRAPH_DIRECTION_OUTGOING = 1;    // (current)-[edge]->(next)
-  GRAPH_DIRECTION_INCOMING = 2;    // (current)<-[edge]-(next)
-  GRAPH_DIRECTION_ANY = 3;         // (current)-[edge]-(next), either direction
+  GRAPH_DIRECTION_OUTGOING = 1; // (current)-[edge]->(next)
+  GRAPH_DIRECTION_INCOMING = 2; // (current)<-[edge]-(next)
+  GRAPH_DIRECTION_ANY = 3; // (current)-[edge]-(next), either direction
 }
 
 // A single property equality filter. `key` is a property name validated as a
@@ -298,8 +298,8 @@ message PropertyFilter {
 // Execution-log-section query: the agent's most recent steps in commit-
 // timestamp order.
 message LogQuery {
-  int32 limit                       = 1; // max steps to return
-  google.protobuf.Timestamp since   = 2; // optional recency lower bound
+  int32 limit = 1; // max steps to return
+  google.protobuf.Timestamp since = 2; // optional recency lower bound
 }
 
 // Response for MemoryService.QueryMemory. Each result section is present only
@@ -307,9 +307,9 @@ message LogQuery {
 // when the request set `link`.
 message QueryMemoryResponse {
   SemanticResult semantic = 1;
-  GraphResult    graph    = 2;
-  LogResult      log      = 3;
-  FusedResult    fused    = 4;
+  GraphResult graph = 2;
+  LogResult log = 3;
+  FusedResult fused = 4;
   // The single read timestamp every section was evaluated at.
   google.protobuf.Timestamp read_timestamp = 5;
 }
@@ -319,9 +319,9 @@ message SemanticResult {
 }
 
 message SemanticMatch {
-  string chunk_id    = 1;
+  string chunk_id = 1;
   string raw_content = 2;
-  double distance    = 3; // cosine distance; smaller is closer
+  double distance = 3; // cosine distance; smaller is closer
 }
 
 // Graph traversal result rows. Each row carries the matched elements' key
@@ -386,7 +386,7 @@ message InspectGraph {
 // commit-timestamp order (newest first). Mirrors LogQuery so callers can follow
 // the log incrementally (poll with `since` advanced to the prior read).
 message InspectLog {
-  int32 limit                     = 1; // max steps to return
+  int32 limit = 1; // max steps to return
   google.protobuf.Timestamp since = 2; // optional recency lower bound
 }
 
@@ -394,8 +394,8 @@ message InspectLog {
 // when its corresponding request section was supplied.
 message InspectMemoryResponse {
   VectorInspectResult vectors = 1;
-  GraphInspectResult  graph   = 2;
-  LogResult           log     = 3; // same ExecutionLogStep records as QueryMemory
+  GraphInspectResult graph = 2;
+  LogResult log = 3; // same ExecutionLogStep records as QueryMemory
   // The single read timestamp every section was evaluated at.
   google.protobuf.Timestamp read_timestamp = 4;
 }
@@ -407,7 +407,7 @@ message VectorInspectResult {
 // A stored vector chunk WITHOUT its embedding. The embedding column is
 // deliberately omitted: it is large and carries no debugging value in a listing.
 message VectorChunkInfo {
-  string chunk_id    = 1;
+  string chunk_id = 1;
   string raw_content = 2;
   // Output-only: the chunk's last-write commit timestamp. Chunks are upserted, so
   // this is the last write, not first creation.
