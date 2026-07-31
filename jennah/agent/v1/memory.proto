@@ -134,6 +134,24 @@ message VectorChunk {
   // embedding width or the whole commit is rejected. float (32-bit) matches the
   // store's ARRAY<FLOAT32> vector column.
   repeated float embedding = 3;
+
+  // Optional caller-supplied attribution stored with the chunk: where it came
+  // from, when, what kind of thing it is. Returned with the chunk on search and
+  // inspect, and usable as a pre-ranking filter on a semantic query (see
+  // SemanticQuery.filters).
+  //
+  // Metadata is NOT embedded — only raw_content is — so putting provenance here
+  // instead of inside the text keeps it out of the vector, where it would
+  // otherwise dilute similarity and still not be filterable.
+  //
+  // An upsert REPLACES the chunk's whole metadata set rather than merging into it:
+  // a key absent from this map is removed. Merge semantics would make a key
+  // impossible to delete and would make a chunk's metadata depend on its write
+  // history rather than its most recent write.
+  //
+  // Keys must match `[A-Za-z0-9_.-]{1,128}`; a key outside that set is rejected
+  // with INVALID_ARGUMENT. At most 32 keys per chunk.
+  map<string, string> metadata = 4;
 }
 
 // Graph-memory writes for one commit. Edges may only connect nodes within the
@@ -254,6 +272,39 @@ message SemanticQuery {
   repeated float embedding = 1; // precomputed query embedding; width must match the db
   string query_text = 2; // embedded server-side when `embedding` is absent
   int32 limit = 3; // max matches to return
+
+  // Optional metadata predicates narrowing the candidate set. All must match
+  // (conjunctive); at most 8 per section, and more is rejected with
+  // INVALID_ARGUMENT.
+  //
+  // Filters are evaluated in the WHERE clause BEFORE ranking, never as a
+  // post-filter over an already-limited result set. So the returned chunks are the
+  // nearest `limit` AMONG the chunks matching the filters — not the filters applied
+  // to an unfiltered nearest-`limit` set, which would return fewer results (often
+  // zero) for reasons a caller could not predict.
+  //
+  // A filtered section MAY therefore return fewer than `limit` results when fewer
+  // chunks match. That is the caller's own narrowing and is reproducible from the
+  // filters; it is NOT the silent truncation the tenant/agent clamp guarantees
+  // against.
+  repeated MetadataFilter filters = 4;
+}
+
+// One predicate over a chunk's metadata.
+message MetadataFilter {
+  // Operator selects how `value` is compared. Only EQUALS is implemented; the
+  // field exists so range predicates (a natural next want — "chunks from the last
+  // 30 days") can be added without changing SemanticQuery's shape. An operator
+  // this version does not implement is rejected with UNIMPLEMENTED rather than
+  // silently treated as equality.
+  enum Operator {
+    OPERATOR_UNSPECIFIED = 0; // treated as EQUALS
+    OPERATOR_EQUALS = 1;
+  }
+
+  string key = 1;
+  string value = 2;
+  Operator operator = 3;
 }
 
 // Graph-section query: a STRUCTURED traversal over the agent's
@@ -353,6 +404,10 @@ message SemanticMatch {
   string chunk_id = 1;
   string raw_content = 2;
   double distance = 3; // cosine distance; smaller is closer
+
+  // The chunk's stored metadata, read in the same snapshot as the hit, so a hit
+  // and its attribution can never disagree. Empty when the chunk has none.
+  map<string, string> metadata = 4;
 }
 
 // Graph traversal result rows. Each row carries the matched elements' key
@@ -456,10 +511,17 @@ message VectorChunkInfo {
   // whose embedding the caller supplied: the platform embedded nothing there, so
   // it truncated nothing.
   //
-  // `token_count` is the count the model reported for the content it actually
-  // consumed, and is absent whenever no embedding was generated server-side.
+  // `token_count` is the number of tokens the model counted in the content it
+  // was GIVEN — not in the prefix it embedded. So when `truncated` is true this
+  // value EXCEEDS the model's input limit rather than equalling it, which makes
+  // it directly useful for sizing: `token_count` divided by the limit is roughly
+  // how many pieces the content needs splitting into. Absent whenever no
+  // embedding was generated server-side.
   optional bool truncated = 4;
   optional int64 token_count = 5;
+
+  // The chunk's stored metadata. Empty when the chunk has none.
+  map<string, string> metadata = 6;
 }
 
 // Graph listing result: the stored nodes and edges themselves (reusing the same

@@ -26,7 +26,7 @@ $ go install github.com/google/gnostic/cmd/protoc-gen-openapi@latest
 Then run:
 
 ```bash
-$ buf dep update && buf generate
+$ buf format -w && buf dep update && buf generate
 ```
 
 CI build auto-updates the [jennah-sdk-go](https://github.com/alphauslabs/jennah-sdk-go) repo.
