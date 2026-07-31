@@ -16,3 +16,4 @@ plugins:
       - output_mode=merge
       - naming=proto
       - fq_schema_naming=true
+      - enum_type=string
