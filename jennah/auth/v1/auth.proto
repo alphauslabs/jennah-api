@@ -20,7 +20,7 @@ option (gnostic.openapi.v3.document) = {
   ]
 };
 
-// AuthService service definition.
+// AuthService is the identity and access surface for an enterprise.
 service AuthService {
   // Gets information about the caller. External (gateway) RPC. Requires a valid
   // jennah access token; returns the resolved caller identity.
