@@ -507,6 +507,12 @@ message ApiKey {
   // the key carries no explicit scope and resolves to the member-equivalent
   // default. Management-class permissions never appear here.
   repeated string scopes = 10;
+  // Agents this key may reach, as agent selectors (an exact agent_instance_id, a
+  // "prefix.*" subtree, or "*" for every agent in the enterprise), fixed at
+  // creation. Empty means the key can reach NO agent — a key never inherits the
+  // selectors of the user who created it. Omitted entirely when the caller lacks
+  // the agent.access:read permission.
+  repeated string agent_selectors = 11;
 }
 
 // Request message for the AuthService.CreateApiKey rpc.
@@ -527,6 +533,16 @@ message CreateApiKeyRequest {
   // (a key can never manage keys, members, roles, or enterprise settings). When
   // empty, the key defaults to the member-equivalent data-plane scope.
   repeated string scopes = 3;
+  // Agents the key may reach, as agent selectors: an exact agent_instance_id, a
+  // "prefix.*" subtree (the separator is "."), or "*" for every agent in the
+  // enterprise. The set MUST be contained by the caller's own selectors
+  // (anti-escalation), and "*" additionally requires agent.access:manage.
+  //
+  // When empty the key reaches NO agent. This is deliberately NOT a blanket
+  // default: the key is a service principal in its own right and never borrows
+  // the creating user's reach, so a key minted by an admin is still bound to the
+  // selectors named here.
+  repeated string agent_selectors = 4;
 }
 
 // Response message for the AuthService.CreateApiKey rpc.
@@ -756,6 +772,21 @@ message CustomRole {
   repeated string permissions = 4; // explicit "group.resource:action" grants (no wildcards)
   google.protobuf.Timestamp created_at = 5; // server-assigned commit timestamp
   google.protobuf.Timestamp updated_at = 6; // last modification; unset until first update
+  // Agents holders of this role may reach, as agent selectors: an exact
+  // agent_instance_id, a "prefix.*" subtree (the separator is "."), or "*" for
+  // every agent in the enterprise. Empty means holders reach NO agent — this is
+  // the default for a role created without selectors, and it is what makes agent
+  // access opt-in. Omitted entirely when the caller lacks agent.access:read.
+  repeated string agent_selectors = 7;
+}
+
+// A presence-detectable list of agent selectors. Used where an unset field must
+// mean "leave unchanged" and an explicitly-empty list must mean "clear", which a
+// bare `repeated string` cannot express: proto3 cannot distinguish an omitted
+// repeated field from an empty one, so a client unaware of selectors would
+// silently clear them on an unrelated update.
+message AgentSelectorList {
+  repeated string selectors = 1; // may be empty, meaning "no agent access"
 }
 
 // Request message for the AuthService.ListPermissions rpc.
@@ -771,6 +802,13 @@ message ListPermissionsResponse {
 message CreateRoleRequest {
   string name = 1; // unique within the enterprise; must not shadow a built-in role
   repeated string permissions = 2; // explicit "group.resource:action" grants (no wildcards)
+  // Agents holders of this role may reach (see CustomRole.agent_selectors). The
+  // set MUST be contained by the caller's own selectors (anti-escalation), and
+  // "*" additionally requires agent.access:manage. Setting a non-empty set
+  // requires agent.access:manage in addition to iam.roles:manage, so delegating
+  // role administration does not implicitly delegate widening agent access.
+  // Empty (the default) creates a role that reaches no agent.
+  repeated string agent_selectors = 3;
 }
 
 // Response message for the AuthService.CreateRole rpc.
@@ -806,6 +844,13 @@ message UpdateRoleRequest {
   string role_id = 1; // path parameter; must belong to the caller's active enterprise
   string name = 2; // unique within the enterprise; must not shadow a built-in role
   repeated string permissions = 3; // explicit "group.resource:action" grants (no wildcards)
+  // Optional replacement for the role's agent selectors. UNSET leaves the stored
+  // selectors untouched (so a client that only renames a role, or one unaware of
+  // selectors, never clears them); SET replaces them wholesale, and an empty
+  // `selectors` list clears them. Changing the stored set requires
+  // agent.access:manage in addition to iam.roles:manage, and the new set MUST be
+  // contained by the caller's own selectors.
+  AgentSelectorList agent_selectors = 4;
 }
 
 // Response message for the AuthService.UpdateRole rpc.
