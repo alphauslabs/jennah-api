@@ -94,6 +94,22 @@ message CommitMemoryRequest {
 
   // Graph section: node and/or edge writes. Absent to commit no graph data.
   GraphWrite graph = 4;
+
+  // When set, embedding truncation is FATAL to the whole commit instead of
+  // merely reported: if the model truncates any chunk whose vector the server
+  // generated, the commit is rejected and no section's rows are written (the
+  // all-or-nothing guarantee applies to the rejection).
+  //
+  // Truncation policy belongs to the caller. An audit-trail writer may prefer a
+  // degraded embedding over a lost commit; a retrieval-critical writer prefers
+  // to fail, split the content, and re-commit. Defaults to false so a caller
+  // that does not care keeps today's behavior — the receipt's
+  // `truncated_chunk_ids` reports the same fact without refusing the write.
+  //
+  // Rejection fires only on the model's OWN report of truncation, never on an
+  // estimated token count, so a caller is never refused for content the model
+  // would in fact have accepted.
+  bool reject_on_truncation = 5;
 }
 
 // A single execution-memory step. On CommitMemory only the payload fields are
@@ -172,6 +188,21 @@ message CommitMemoryResponse {
   int64 vector_rows = 3;
   int64 graph_node_rows = 4;
   int64 graph_edge_rows = 5;
+
+  // Chunks whose SERVER-GENERATED embedding the model truncated because the
+  // content exceeded the embedding model's input limit. The commit SUCCEEDED,
+  // but for each id listed here the tail of `raw_content` is not represented in
+  // the stored vector and is therefore unreachable by semantic search — the
+  // stored content is complete, the stored embedding is not.
+  //
+  // Ids rather than a flag or a count, so a caller knows exactly which chunk to
+  // split and re-commit; a count cannot say that in a multi-chunk commit. Empty
+  // means every generated chunk in this commit was embedded in full.
+  //
+  // Never populated for a caller-supplied embedding: the platform did not embed
+  // that content, so it has nothing to report about it. A precomputed vector's
+  // fidelity is the caller's own concern.
+  repeated string truncated_chunk_ids = 6;
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +443,23 @@ message VectorChunkInfo {
   // Output-only: the chunk's last-write commit timestamp. Chunks are upserted, so
   // this is the last write, not first creation.
   google.protobuf.Timestamp updated_at = 3;
+
+  // Output-only truncation state of the STORED embedding, so already-written
+  // history can be audited and not merely newly-written chunks.
+  //
+  // Both fields use explicit presence, and ABSENT IS MEANINGFUL: it means the
+  // chunk predates truncation tracking, so its state was never measured. A
+  // reader MUST NOT treat absent as "not truncated" — conflating unknown with
+  // known-good is the exact failure this reporting exists to remove.
+  //
+  // Present-and-false means measured and embedded in full. That includes a chunk
+  // whose embedding the caller supplied: the platform embedded nothing there, so
+  // it truncated nothing.
+  //
+  // `token_count` is the count the model reported for the content it actually
+  // consumed, and is absent whenever no embedding was generated server-side.
+  optional bool truncated = 4;
+  optional int64 token_count = 5;
 }
 
 // Graph listing result: the stored nodes and edges themselves (reusing the same
