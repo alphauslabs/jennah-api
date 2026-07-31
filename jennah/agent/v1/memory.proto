@@ -504,6 +504,17 @@ message InspectMemoryRequest {
 // is never included in the response (it is large and not human-inspectable).
 message InspectVectors {
   int32 limit = 1; // max chunks; <= 0 uses the default, clamped to a server max
+
+  // Resume a walk of this listing. Empty starts one. Pass back the
+  // `next_chunk_token` from the prior response; when that comes back EMPTY the
+  // listing is exhausted and there is nothing further to fetch.
+  //
+  // The token is opaque and server-generated. Do not construct, parse, or edit
+  // one: a token the server cannot interpret is REJECTED with INVALID_ARGUMENT
+  // rather than quietly restarting from the first page, because a silent restart
+  // would hand a caller walking to exhaustion a partial listing that looks
+  // complete.
+  string page_token = 2;
 }
 
 // Graph-section listing request. Enumerates stored nodes and edges independently
@@ -511,6 +522,14 @@ message InspectVectors {
 message InspectGraph {
   int32 node_limit = 1; // max nodes; <= 0 uses the default, clamped to a server max
   int32 edge_limit = 2; // max edges; <= 0 uses the default, clamped to a server max
+
+  // Nodes and edges are walked INDEPENDENTLY — a workspace typically holds far
+  // more edges than nodes, so one shared cursor would stall the longer listing or
+  // re-deliver the shorter one. Pass back `next_node_token` / `next_edge_token`
+  // from the prior response; empty means that listing is exhausted. Opaque and
+  // server-generated; see InspectVectors.page_token.
+  string node_page_token = 3;
+  string edge_page_token = 4;
 }
 
 // Execution-log-section listing request: the agent's most recent steps in
@@ -519,6 +538,11 @@ message InspectGraph {
 message InspectLog {
   int32 limit = 1; // max steps to return
   google.protobuf.Timestamp since = 2; // optional recency lower bound
+
+  // Resume a walk of the step listing; empty starts one. Pass back
+  // `next_log_token`; empty means exhausted. Opaque and server-generated; see
+  // InspectVectors.page_token.
+  string page_token = 3;
 }
 
 // Response for MemoryService.InspectMemory. Each result section is present only
@@ -529,6 +553,26 @@ message InspectMemoryResponse {
   LogResult log = 3; // same ExecutionLogStep records as QueryMemory
   // The single read timestamp every section was evaluated at.
   google.protobuf.Timestamp read_timestamp = 4;
+
+  // Continuation tokens, one per listing. An EMPTY token means that listing is
+  // EXHAUSTED — not merely that this page ended — so a caller can tell "this is
+  // everything held" from "this is the first page of an unknown amount". Feed a
+  // token back on the matching request section to fetch the next page.
+  //
+  // Listings exhaust independently: a workspace with many chunks and few log steps
+  // reports the log done while chunks still have more.
+  //
+  // These live on the response rather than inside each result message because
+  // `LogResult` is shared with QueryMemory, which returns a bounded slice of
+  // recent steps rather than an enumerable listing and has nothing to continue.
+  //
+  // CONSISTENCY: pages are independently snapshotted, so a commit landing mid-walk
+  // may appear. Set `as_of` on every request of the walk for a stable view —
+  // bounded by the backend's version-retention window (about an hour).
+  string next_chunk_token = 5;
+  string next_node_token = 6;
+  string next_edge_token = 7;
+  string next_log_token = 8;
 }
 
 message VectorInspectResult {
