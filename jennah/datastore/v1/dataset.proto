@@ -1,0 +1,222 @@
+syntax = "proto3";
+
+package jennahapi.datastore.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/alphauslabs/jennah-api/datastore";
+
+// DatasetService is the lifecycle control plane for an enterprise's application
+// datasets.
+//
+// A DATASET is a tenant-owned container of user-defined application tables —
+// peer to an agent workspace, not nested under one. `(EnterpriseId, DatasetId)`
+// is the clamp prefix for every application statement, exactly mirroring the
+// `(EnterpriseId, AgentInstanceId)` model of the memory plane. EnterpriseId
+// always comes from the verified credential; DatasetId always from the route.
+//
+// Unlike an agent, a dataset is NOT region-pinned to an agent's execution
+// locality: it selects its own Spanner configuration at creation, so application
+// data can be regional for locality or multi-region for globally
+// strongly-consistent reads.
+service DatasetService {
+  // Creates a dataset under the caller's enterprise, registers it in the
+  // control-plane directory, and places it on a data-plane database compatible
+  // with the requested Spanner configuration. The EnterpriseId is taken from the
+  // token, never the body.
+  //
+  // Returns the dataset synchronously. When the data-plane database for the
+  // chosen configuration must be provisioned first, the returned Dataset carries
+  // DATASET_STATUS_PROVISIONING; poll GetDataset until DATASET_STATUS_ACTIVE.
+  //
+  // Requires datastore.datasets:create AND a dataset selector already covering
+  // the requested dataset_id — creating a dataset grants no access to it, for
+  // the same reason spawning an agent does not: selectors live on roles and
+  // keys, so an auto-grant would mutate a role shared with other members.
+  rpc CreateDataset(CreateDatasetRequest) returns (CreateDatasetResponse) {
+    option (google.api.http) = {
+      post: "/v1/datasets"
+      body: "*"
+    };
+  }
+
+  // Reads one dataset the caller owns, including its lifecycle status. This is
+  // the readiness-poll surface for a create that is still provisioning, and for
+  // a schema declaration that is still applying. A dataset_id not owned by the
+  // caller's enterprise is treated as not found.
+  rpc GetDataset(GetDatasetRequest) returns (GetDatasetResponse) {
+    option (google.api.http) = {get: "/v1/datasets/{dataset_id}"};
+  }
+
+  // Lists the caller enterprise's datasets, ordered by dataset_id, with keyset
+  // pagination. The listing is FILTERED to the datasets the caller's dataset
+  // selectors reach — it is not gated with a yes/no, so a caller with no
+  // selectors receives an empty page rather than a permission error.
+  rpc ListDatasets(ListDatasetsRequest) returns (ListDatasetsResponse) {
+    option (google.api.http) = {get: "/v1/datasets"};
+  }
+
+  // Deletes a dataset the caller owns: drops its declared tables and removes its
+  // catalog and directory records, cascading to all of its application rows.
+  // Returns an erasure receipt — the commit timestamp and per-table row counts —
+  // so a caller can evidence a complete erasure. A dataset_id not owned by the
+  // caller's enterprise is treated as not found.
+  rpc DeleteDataset(DeleteDatasetRequest) returns (DeleteDatasetResponse) {
+    option (google.api.http) = {delete: "/v1/datasets/{dataset_id}"};
+  }
+}
+
+// Lifecycle state of a dataset.
+enum DatasetStatus {
+  DATASET_STATUS_UNSPECIFIED = 0;
+  // Ready for use: the data-plane database exists and the directory row is
+  // registered. Tables may be declared and data committed.
+  DATASET_STATUS_ACTIVE = 1;
+  // The data-plane database for the chosen Spanner configuration is being
+  // created (which can take minutes). No table may be declared yet; poll
+  // GetDataset until ACTIVE.
+  DATASET_STATUS_PROVISIONING = 2;
+  // Provisioning failed; status_detail carries the reason. The caller may retry
+  // CreateDataset (idempotent on dataset_id) or delete the failed record.
+  DATASET_STATUS_FAILED = 3;
+  // Teardown is in flight. The dataset accepts no reads or writes.
+  DATASET_STATUS_DELETING = 4;
+}
+
+// A single application dataset.
+message Dataset {
+  // Enterprise that owns this dataset, resolved from the caller's token. Echoed
+  // for clarity; it is never accepted from a request body.
+  string enterprise_id = 1;
+
+  // Unique within the enterprise. Constrained to the same shape as an
+  // agent_instance_id — at most 128 characters of lowercase letters, digits,
+  // '.', '_' or '-', starting and ending with a letter or digit — and that
+  // constraint is load-bearing for authorization, not cosmetic: '.' is the
+  // selector hierarchy separator, so an id permitted to carry a selector
+  // metacharacter could be crafted to collide with a pattern and widen access.
+  // The charset also excludes '/', which would make the dataset unreachable
+  // through the HTTP gateway, where dataset_id binds as a single path segment.
+  string dataset_id = 2;
+
+  string display_name = 3;
+
+  // The Spanner configuration this dataset's data lives on: a regional config
+  // for locality, or a multi-region config (e.g. "nam-eur-asia1", "eur6") for
+  // globally strongly-consistent low-latency reads. Chosen at creation and fixed
+  // for the dataset's lifetime.
+  //
+  // The trade is real and the owner picks it deliberately: a multi-region config
+  // buys globally consistent reads at the cost of write latency. Bounded-staleness
+  // reads (see DataService.QueryData) mitigate read latency without giving up the
+  // write geography.
+  string spanner_config = 4;
+
+  DatasetStatus status = 5;
+  google.protobuf.Timestamp created_at = 6; // server-assigned commit timestamp
+
+  // Human-readable detail for a non-terminal or failed status (e.g. the
+  // provisioning phase, or the failure reason when status is FAILED). Empty for
+  // a plain ACTIVE dataset.
+  string status_detail = 7;
+}
+
+// Request message for the DatasetService.CreateDataset rpc.
+message CreateDatasetRequest {
+  string dataset_id = 1; // caller-chosen; unique within the enterprise
+  string display_name = 2;
+
+  // Optional Spanner configuration identifier. Must be one the platform offers;
+  // when empty the platform default configuration is used.
+  string spanner_config = 3;
+
+  // When true, mint an API key scoped to this dataset alongside it and return
+  // its one-time secret. Purely a convenience for the common "create a dataset,
+  // hand its key to an app" flow.
+  //
+  // The result is an ORDINARY API key on the api-keys surface: its secret is
+  // shown exactly once, its scopes and dataset selectors are immutable, and it
+  // is revocable and re-creatable independently of the dataset. There is no
+  // key-rotation RPC anywhere in the platform — "rotate" means revoke and
+  // create — so nothing about this key's lifecycle is coupled to the dataset's.
+  //
+  // The key receives a dataset selector naming exactly this dataset. It is
+  // subject to the same anti-escalation rule as any key: the caller must already
+  // reach this dataset, or the key cannot be minted.
+  bool create_api_key = 4;
+
+  // Scopes for the key minted when create_api_key is set. Each MUST be a subset
+  // of the caller's own effective permissions and MUST NOT be management-class.
+  // When empty the key defaults to the member-equivalent data-plane scope, which
+  // includes datastore.data:read/write but NOT datastore.schema:manage — so a key
+  // meant to declare tables must name that permission explicitly.
+  repeated string api_key_scopes = 5;
+}
+
+// Response message for the DatasetService.CreateDataset rpc.
+message CreateDatasetResponse {
+  Dataset dataset = 1;
+
+  // The one-time plaintext key (prefixed `jennah_sk_`), present only when the
+  // request set create_api_key. It cannot be retrieved again, so the caller must
+  // store it now.
+  string api_key_secret = 2;
+
+  // Stable id of the minted key, for revoking it later through the api-keys
+  // surface. Empty when no key was minted. The key's non-secret metadata is read
+  // through AuthService.ListApiKeys like any other key's — it is deliberately not
+  // duplicated here, so there is one surface describing a key and not two.
+  string api_key_id = 3;
+}
+
+// Request message for the DatasetService.GetDataset rpc.
+message GetDatasetRequest {
+  string dataset_id = 1; // path parameter
+}
+
+// Response message for the DatasetService.GetDataset rpc.
+message GetDatasetResponse {
+  Dataset dataset = 1;
+}
+
+// Request message for the DatasetService.ListDatasets rpc.
+message ListDatasetsRequest {
+  int32 page_size = 1; // max datasets to return; server picks a default when 0
+
+  // Resume a walk of this listing. Empty starts one. Pass back the
+  // `next_page_token` from the prior response; when that comes back EMPTY the
+  // listing is exhausted and there is nothing further to fetch — so a caller can
+  // tell "this is everything" from "this page happened to end here".
+  //
+  // The token is opaque and server-generated. Do not construct, parse, or edit
+  // one: a token the server cannot interpret is REJECTED with INVALID_ARGUMENT
+  // rather than quietly restarting from the first page, because a silent restart
+  // would hand a caller walking to exhaustion a partial listing that looks
+  // complete. A token can only narrow within the caller's slice; it can never
+  // widen it.
+  string page_token = 2;
+}
+
+// Response message for the DatasetService.ListDatasets rpc.
+message ListDatasetsResponse {
+  repeated Dataset datasets = 1; // ordered by dataset_id
+  string next_page_token = 2; // empty when the listing is exhausted
+}
+
+// Request message for the DatasetService.DeleteDataset rpc.
+message DeleteDatasetRequest {
+  string dataset_id = 1; // path parameter
+}
+
+// Response message for the DatasetService.DeleteDataset rpc.
+//
+// The erasure receipt: a commit timestamp plus how many rows were removed from
+// each of the dataset's tables, so a caller can evidence a complete erasure.
+message DeleteDatasetResponse {
+  google.protobuf.Timestamp deleted_at = 1; // teardown commit timestamp
+  int64 tables_dropped = 2;
+  // Rows removed per logical table name. A table that held no rows is present
+  // with a count of zero, so the map also enumerates what was dropped.
+  map<string, int64> rows_deleted_by_table = 3;
+}

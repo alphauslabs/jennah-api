@@ -1,0 +1,444 @@
+syntax = "proto3";
+
+package jennahapi.datastore.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/alphauslabs/jennah-api/datastore";
+
+// DataService is the row transport for a dataset's application tables: a
+// structured write and a structured read, mirroring the memory plane's
+// CommitMemory / QueryMemory.
+//
+// Both are STRUCTURED, not SQL. A caller sends an operation tree naming logical
+// tables and columns; the gateway resolves those through the catalog to
+// platform-minted physical identifiers, injects the `(EnterpriseId, DatasetId)`
+// clamp into every table pattern, and binds every caller value as a query
+// parameter. No caller-authored query text is ever executed.
+//
+// That is a deliberate expressiveness trade. Raw SQL passthrough would re-open
+// both identifier injection and clamp escape, and force a full SQL
+// parser/rewriter onto the hostile path; a structured tree lets the gateway EMIT
+// the statement with the clamp and identifiers under its own control. The gap is
+// real — aggregations, subqueries, and arbitrary expressions are not expressible
+// here — and a controlled read-only SQL surface, parsed and re-clamped through
+// the catalog, is a possible later addition rather than a promise.
+service DataService {
+  // Applies a set of structured row operations across one or more of the
+  // dataset's tables in a SINGLE Spanner read-write transaction, clamped to
+  // `(EnterpriseId, DatasetId)`. All-or-nothing: if any operation fails, no
+  // operation's rows are written.
+  //
+  // This is the atomic multi-table write a split stack cannot offer — a row, its
+  // embedding, and rows in other tables land together or not at all. An
+  // operation naming a table absent from the dataset's catalog rejects the whole
+  // commit, writing nothing.
+  //
+  // Requires datastore.data:write and a dataset selector matching dataset_id.
+  rpc CommitData(CommitDataRequest) returns (CommitDataResponse) {
+    option (google.api.http) = {
+      post: "/v1/datasets/{dataset_id}/data:commit"
+      body: "*"
+    };
+  }
+
+  // Evaluates a multi-section read against ONE read snapshot, so a relational
+  // predicate and a vector ranking observe the same instant: an optional
+  // relational section and an optional exact-KNN vector section. Every section
+  // is clamped to the caller's `(EnterpriseId, DatasetId)` slice, and joins are
+  // restricted to tables within the same dataset.
+  //
+  // The request is a SECTIONED ENVELOPE for the same reason QueryMemory is: a
+  // flat relational-shaped request would make adding a further modality a
+  // breaking change to a published endpoint. A graph section is the intended
+  // third.
+  //
+  // Requires datastore.data:read and a dataset selector matching dataset_id.
+  rpc QueryData(QueryDataRequest) returns (QueryDataResponse) {
+    option (google.api.http) = {
+      post: "/v1/datasets/{dataset_id}/data:query"
+      body: "*"
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Values
+// ---------------------------------------------------------------------------
+
+// One typed column value.
+//
+// Values are explicitly typed rather than carried as free-form JSON because
+// application columns are real typed Spanner columns: routing an INT64 through a
+// JSON number silently loses precision past 2^53, and TIMESTAMP, DATE, and BYTES
+// have no faithful JSON scalar at all. A money column or an id that quietly
+// changes value in transit is exactly the failure this shape exists to prevent.
+message Value {
+  oneof kind {
+    // Explicit SQL NULL. Distinct from an ABSENT column: absent means "leave
+    // this column alone" on an update and "use the column default" on an
+    // insert, while null_value writes NULL.
+    bool null_value = 1;
+    string string_value = 2;
+    // Serialized as a JSON string over the REST gateway (proto3 JSON mapping),
+    // so full 64-bit range survives the round trip.
+    int64 int64_value = 3;
+    double float64_value = 4;
+    bool bool_value = 5;
+    google.protobuf.Timestamp timestamp_value = 6;
+    string date_value = 7; // ISO-8601 calendar date, "YYYY-MM-DD"
+    bytes bytes_value = 8;
+    string json_value = 9; // serialized JSON document, for a COLUMN_TYPE_JSON column
+    VectorValue vector_value = 10;
+  }
+}
+
+// A fixed-width embedding. Its length must equal the target column's declared
+// `dimensions`; a mismatch is refused rather than padded or truncated. float
+// (32-bit) matches the store's ARRAY<FLOAT32> vector column.
+message VectorValue {
+  repeated float values = 1;
+}
+
+// One row: logical column name -> value. A column absent from the map is not
+// written (see Value.null_value for the difference from an explicit NULL).
+message Row {
+  map<string, Value> columns = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Predicates
+// ---------------------------------------------------------------------------
+
+// One predicate over a column.
+//
+// The operator set is deliberately IDENTICAL to the memory plane's metadata
+// filter grammar, including what it leaves out: there is no inequality operator
+// and no disjunction between predicates, both of which were considered and cut
+// there rather than overlooked. Predicates combine conjunctively — all must
+// match. Reproducing that set exactly is the point: two predicate languages on
+// one platform is how a filter that means subtly different things in two places
+// eventually gets written.
+//
+// ONE SEMANTIC DIFFERENCE, and it is deliberate. Metadata comparison is
+// LEXICOGRAPHIC, because a metadata value is an untyped string and the platform
+// refuses to guess a type for it. An application column HAS a declared type, so
+// comparison here is TYPED and natural: an INT64 column orders numerically
+// (10 > 9), a TIMESTAMP column chronologically. The metadata plane's
+// zero-pad-your-numbers advice does not apply and must not be carried over.
+//
+// A row whose column is NULL matches NO operator, including OPERATOR_EQUALS —
+// there is no value to compare or order against, so a NULL excludes. This
+// matches the metadata plane's absent-key rule.
+message Predicate {
+  // How `value` is compared against the row's stored value for `column`. Each
+  // reads "the row's stored value <op> `value`". A bounded range is two
+  // predicates on the same column.
+  enum Operator {
+    OPERATOR_UNSPECIFIED = 0; // treated as EQUALS
+    OPERATOR_EQUALS = 1;
+    OPERATOR_LESS_THAN = 2;
+    OPERATOR_LESS_THAN_OR_EQUAL = 3;
+    OPERATOR_GREATER_THAN = 4;
+    OPERATOR_GREATER_THAN_OR_EQUAL = 5;
+  }
+
+  // Logical column name, resolved through the dataset catalog. A name the
+  // catalog does not hold is NOT_FOUND; it is never interpolated.
+  string column = 1;
+  Operator operator = 2;
+  // Bound as a query parameter, never interpolated. Its type must match the
+  // column's declared type.
+  Value value = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Commit
+// ---------------------------------------------------------------------------
+
+// What a row operation does.
+enum OperationType {
+  OPERATION_TYPE_UNSPECIFIED = 0;
+  // Fails if a row with the same primary key already exists.
+  OPERATION_TYPE_INSERT = 1;
+  // Writes or replaces the row wholesale.
+  OPERATION_TYPE_UPSERT = 2;
+  // Updates the columns present in `row` on rows matching `where`; fails if no
+  // row matches.
+  OPERATION_TYPE_UPDATE = 3;
+  // Deletes rows matching `where`.
+  OPERATION_TYPE_DELETE = 4;
+}
+
+// One structured row operation.
+message RowOperation {
+  // Logical table name, resolved through the dataset catalog. A table the
+  // catalog does not hold rejects the whole commit.
+  string table = 1;
+  OperationType type = 2;
+
+  // Column values for INSERT, UPSERT, and UPDATE. Ignored for DELETE.
+  //
+  // A vector column's value is supplied here like any other, as a
+  // VectorValue — and its ABSENCE is meaningful. When the column declares a
+  // source column, an absent vector is GENERATED server-side from that column's
+  // content, inline in the same statement as the row write, so the row and its
+  // embedding are never separately visible. When the column declares no source
+  // column, an absent vector is a typed error: it is never silently generated
+  // and never written as NULL.
+  //
+  // A SUPPLIED vector is stored exactly as given and the model is not invoked,
+  // so a caller may use its own embedding model provided the width matches. The
+  // platform can dimension-check a supplied vector but cannot verify which model
+  // produced it — as is already true of the memory plane.
+  Row row = 3;
+
+  // Row selector for UPDATE and DELETE, combined conjunctively with the
+  // dataset clamp (which is injected and cannot be omitted or widened). Ignored
+  // for INSERT and UPSERT.
+  //
+  // An UPDATE or DELETE with no predicates affects every row of the table
+  // WITHIN THE DATASET SLICE. That is permitted and bounded, but it is rarely
+  // what a caller means, so state the key explicitly unless a full-table
+  // operation is intended.
+  repeated Predicate where = 4;
+}
+
+// Request for DataService.CommitData.
+message CommitDataRequest {
+  string dataset_id = 1; // route path parameter; never read from the body
+
+  // Operations to apply, in order, in one transaction. An empty list is a no-op
+  // commit and is not an error.
+  repeated RowOperation operations = 2;
+
+  // When set, embedding truncation is FATAL to the whole commit instead of
+  // merely reported: if the model truncates any embedding the SERVER generated,
+  // the commit is rejected and no row from any table in it is written.
+  //
+  // Truncation policy belongs to the caller, exactly as it does on the memory
+  // plane, and the same reasoning applies: an audit-trail writer may prefer a
+  // degraded embedding over a lost commit, while a retrieval-critical writer
+  // prefers to fail, split the content, and re-commit. Defaults to false, where
+  // the receipt's `truncations` reports the same fact without refusing the
+  // write.
+  //
+  // Rejection fires only on the model's OWN report of truncation, never on an
+  // estimated token count, so a caller is never refused for content the model
+  // would in fact have accepted. It never fires for a caller-supplied vector:
+  // the platform embedded nothing there and has nothing to report about it.
+  bool reject_on_truncation = 3;
+}
+
+// One server-generated embedding the model truncated. The row was written (or,
+// with reject_on_truncation, the commit was refused): the stored content is
+// complete, the stored embedding is not, so the tail of the source column is
+// unreachable by vector search.
+message TruncationReport {
+  string table = 1; // logical table name
+  string column = 2; // logical vector column name
+  // Primary-key values of the affected row, by logical column name, so a caller
+  // knows exactly which row to split and re-commit. A count could not say that
+  // in a multi-row commit.
+  map<string, Value> primary_key = 3;
+  // Tokens the model counted in the content it was GIVEN — not in the prefix it
+  // embedded — so this EXCEEDS the model's input limit rather than equalling it.
+  // Dividing it by the limit is roughly how many pieces the content needs
+  // splitting into.
+  int64 token_count = 4;
+}
+
+// The commit receipt: a commit timestamp plus what the atomic step persisted.
+message CommitDataResponse {
+  google.protobuf.Timestamp commit_timestamp = 1;
+  // Rows affected per logical table name.
+  map<string, int64> rows_by_table = 2;
+  // Server-generated embeddings the model truncated. Empty means every
+  // generated embedding in this commit was produced in full. Never populated for
+  // a caller-supplied vector.
+  repeated TruncationReport truncations = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Query
+// ---------------------------------------------------------------------------
+
+// How a join combines rows. Both sides must be tables in the SAME dataset —
+// cross-dataset joins are not expressible, because each query is clamped to one
+// dataset slice exactly as a memory query is clamped to one agent.
+enum JoinType {
+  JOIN_TYPE_UNSPECIFIED = 0; // treated as INNER
+  JOIN_TYPE_INNER = 1;
+  JOIN_TYPE_LEFT = 2;
+}
+
+// One join onto the relational section's root table.
+message Join {
+  string table = 1; // logical table name, within this dataset
+  JoinType type = 2;
+  // Equi-join condition: `left_column` on the previously-joined relation equals
+  // `right_column` on `table`. Both resolve through the catalog; neither is
+  // interpolated.
+  string left_column = 3;
+  string right_column = 4;
+}
+
+// Sort direction and column for a relational result.
+message OrderBy {
+  string column = 1; // logical column name
+  bool descending = 2;
+}
+
+// Relational section: predicates, projection, joins, ordering, pagination.
+message RelationalQuery {
+  string table = 1; // logical root table name
+
+  // Logical columns to return. Empty projects every column of every joined
+  // table. A column named in more than one joined table must be disambiguated
+  // as "table.column".
+  repeated string select = 2;
+
+  // Conjunctive predicates, combined with the injected dataset clamp.
+  repeated Predicate where = 3;
+
+  // Joins onto `table`, applied in order. Restricted to this dataset's
+  // cataloged tables.
+  repeated Join joins = 4;
+
+  repeated OrderBy order_by = 5;
+
+  // Max rows to return. When it exceeds the tier's ceiling the query is served
+  // AT the ceiling rather than refused — asking for more rows than the plan
+  // allows is served short, not rejected.
+  int32 limit = 6;
+
+  // Resume a walk of this section. Empty starts one. See
+  // QueryDataResponse.next_page_token for the exhaustion contract. Opaque and
+  // server-generated: a token the server cannot interpret is REJECTED with
+  // INVALID_ARGUMENT rather than silently restarting, and a token can only
+  // narrow within the caller's slice, never widen it.
+  string page_token = 7;
+}
+
+// Vector section: exact-KNN ranking over one vector column.
+//
+// Ranking is EXACT COSINE_DISTANCE, not an approximate index. Each query is
+// already clamped to a dataset slice, which makes the scan small and an ANN
+// index pointless — the same conclusion the memory plane reached.
+message VectorQuery {
+  string table = 1; // logical table name
+  string column = 2; // logical COLUMN_TYPE_VECTOR column to rank by
+
+  // Query vector. Its width must equal the column's declared `dimensions`; a
+  // mismatch is refused, which is what makes a later re-embed detectable rather
+  // than silently returning nonsense.
+  VectorValue embedding = 3;
+
+  // Text to embed server-side as the query vector, as an alternative to
+  // `embedding`. Requires the target column to declare a source column — the
+  // platform will not guess which model to embed a query with for a column whose
+  // vectors it did not produce. Exactly one of `embedding` or `query_text` must
+  // be supplied.
+  string query_text = 4;
+
+  // Logical columns to return alongside the distance. Empty projects every
+  // column of the table except the vector column itself, which is large and
+  // almost never wanted in a result.
+  repeated string select = 5;
+
+  // Conjunctive predicates narrowing the candidate set.
+  //
+  // These are evaluated in the WHERE clause BEFORE ranking, never as a
+  // post-filter over an already-ranked or already-limited set. So the result is
+  // the nearest `limit` rows AMONG those matching the predicates — not the
+  // predicates applied to an unfiltered nearest-`limit` set, which would return
+  // fewer rows (often zero) for reasons a caller could not predict. Same rule
+  // the memory plane applies to metadata filters.
+  repeated Predicate where = 6;
+
+  // Max matches to return, clamped to the tier's ceiling like the relational
+  // section's. A filtered section MAY return fewer when fewer rows match; that
+  // is the caller's own narrowing and is reproducible from the predicates, not
+  // the silent truncation the dataset clamp guarantees against.
+  int32 limit = 7;
+}
+
+// Read staleness for the whole query. Absent means a STRONG, externally
+// consistent read — the default, and the right one unless latency demands
+// otherwise.
+//
+// A staleness bound is applied UNIFORMLY to every section, so sections can never
+// observe different instants. Bounded staleness is what makes a multi-region
+// dataset read at local latency without giving up its write geography.
+message ReadStaleness {
+  oneof mode {
+    // Read at any timestamp at most this far in the past, letting Spanner pick a
+    // replica-local timestamp. The usual choice for a low-latency global read.
+    google.protobuf.Duration max_staleness = 1;
+    // Read at exactly this far in the past.
+    google.protobuf.Duration exact_staleness = 2;
+    // Read at this exact timestamp. Bounded by the backend's version-retention
+    // window (about an hour); an older timestamp is refused.
+    google.protobuf.Timestamp read_timestamp = 3;
+  }
+}
+
+// Request for DataService.QueryData.
+//
+// Any subset of the section fields may be present; at least one SHOULD be. All
+// present sections are evaluated at ONE read timestamp.
+message QueryDataRequest {
+  string dataset_id = 1; // route path parameter; never read from the body
+
+  // Relational section. Absent to skip it.
+  RelationalQuery relational = 2;
+  // Exact-KNN vector section. Absent to skip it.
+  VectorQuery vector = 3;
+
+  // Optional read staleness, applied uniformly to every section. Absent reads
+  // strongly.
+  ReadStaleness staleness = 4;
+}
+
+// Relational section result.
+message RelationalResult {
+  repeated Row rows = 1;
+}
+
+// One vector-section match: the projected row plus its distance from the query
+// vector.
+message VectorMatch {
+  Row row = 1;
+  double distance = 2; // cosine distance; smaller is closer
+}
+
+// Vector section result, ordered by ascending distance.
+message VectorResult {
+  repeated VectorMatch matches = 1;
+}
+
+// Response for DataService.QueryData. Each result section is present only when
+// its corresponding request section was supplied.
+message QueryDataResponse {
+  RelationalResult relational = 1;
+  VectorResult vector = 2;
+
+  // The single read timestamp every section was evaluated at.
+  google.protobuf.Timestamp read_timestamp = 3;
+
+  // Continuation token for the RELATIONAL section. An EMPTY token means the
+  // listing is EXHAUSTED — not merely that this page ended — so a caller can
+  // tell "this is every matching row" from "this is the first page of an unknown
+  // amount". Feed it back as RelationalQuery.page_token.
+  //
+  // The vector section has no continuation: it is a top-`limit` ranking, not an
+  // enumerable listing, so there is nothing to resume. Asking for more nearest
+  // neighbours means raising `limit`, not paging.
+  //
+  // CONSISTENCY: pages are independently snapshotted, so a commit landing
+  // mid-walk may appear. Set the same `staleness.read_timestamp` on every
+  // request of the walk for a stable view.
+  string next_page_token = 4;
+}

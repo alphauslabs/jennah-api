@@ -513,6 +513,20 @@ message ApiKey {
   // selectors of the user who created it. Omitted entirely when the caller lacks
   // the agent.access:read permission.
   repeated string agent_selectors = 11;
+  // Datasets this key may reach, as dataset selectors, under exactly the same
+  // rules as agent_selectors above and in a SEPARATE namespace: an exact
+  // dataset_id, a "prefix.*" subtree, or "*" for every dataset in the
+  // enterprise. Empty means the key can reach NO dataset — which is why an
+  // unscoped key, whose default permissions include datastore.data:read/write,
+  // still reaches nothing until a selector is set.
+  //
+  // The two namespaces never interact: agent reach grants no dataset reach and
+  // vice versa. Omitted entirely when the caller lacks datastore.access:read,
+  // independently of whether they may see agent_selectors.
+  //
+  // A "per-project key" is simply a key whose dataset_selectors names one
+  // dataset.
+  repeated string dataset_selectors = 12;
 }
 
 // Request message for the AuthService.CreateApiKey rpc.
@@ -543,6 +557,14 @@ message CreateApiKeyRequest {
   // the creating user's reach, so a key minted by an admin is still bound to the
   // selectors named here.
   repeated string agent_selectors = 4;
+  // Datasets the key may reach, as dataset selectors, under the same rules in
+  // the dataset namespace. Containment is checked PER NAMESPACE: the caller's
+  // agent reach can never fund a dataset grant, however broad it is, and "*"
+  // here requires datastore.access:manage rather than agent.access:manage.
+  //
+  // When empty the key reaches NO dataset, for the same reason it reaches no
+  // agent when agent_selectors is empty.
+  repeated string dataset_selectors = 5;
 }
 
 // Response message for the AuthService.CreateApiKey rpc.
@@ -778,6 +800,12 @@ message CustomRole {
   // the default for a role created without selectors, and it is what makes agent
   // access opt-in. Omitted entirely when the caller lacks agent.access:read.
   repeated string agent_selectors = 7;
+  // Datasets holders of this role may reach, as dataset selectors, in a separate
+  // namespace under the same grammar and matching rules. Empty means holders
+  // reach NO dataset — the default, and what makes dataset access opt-in even
+  // though the built-in member role carries the datastore data-plane
+  // permissions. Omitted entirely when the caller lacks datastore.access:read.
+  repeated string dataset_selectors = 8;
 }
 
 // A presence-detectable list of agent selectors. Used where an unset field must
@@ -787,6 +815,19 @@ message CustomRole {
 // silently clear them on an unrelated update.
 message AgentSelectorList {
   repeated string selectors = 1; // may be empty, meaning "no agent access"
+}
+
+// A presence-detectable list of DATASET selectors, the dataset namespace's
+// counterpart to AgentSelectorList and used for the same reason.
+//
+// It is a separate message rather than a reuse of AgentSelectorList because the
+// two are set independently — an update may replace one namespace's selectors
+// and leave the other's untouched — and a shared type would make "unset" mean
+// "leave both alone", collapsing that distinction. A shared, namespace-neutral
+// type would have been cleaner from the start, but renaming AgentSelectorList
+// now would break every generated client for no behavioral gain.
+message DatasetSelectorList {
+  repeated string selectors = 1; // may be empty, meaning "no dataset access"
 }
 
 // Request message for the AuthService.ListPermissions rpc.
@@ -809,6 +850,15 @@ message CreateRoleRequest {
   // role administration does not implicitly delegate widening agent access.
   // Empty (the default) creates a role that reaches no agent.
   repeated string agent_selectors = 3;
+  // Datasets holders of this role may reach (see CustomRole.dataset_selectors).
+  // Containment is checked PER NAMESPACE against the caller's own dataset reach,
+  // "*" requires datastore.access:manage, and setting a non-empty set requires
+  // datastore.access:manage in addition to iam.roles:manage.
+  //
+  // The two access permissions are independent, so an enterprise may delegate
+  // dataset-access administration to someone who administers no agent access.
+  // Empty (the default) creates a role that reaches no dataset.
+  repeated string dataset_selectors = 4;
 }
 
 // Response message for the AuthService.CreateRole rpc.
@@ -851,6 +901,12 @@ message UpdateRoleRequest {
   // agent.access:manage in addition to iam.roles:manage, and the new set MUST be
   // contained by the caller's own selectors.
   AgentSelectorList agent_selectors = 4;
+  // Optional replacement for the role's dataset selectors, with the same
+  // unset-means-unchanged semantics as agent_selectors above. Presence is
+  // tracked PER NAMESPACE, so replacing agent reach never disturbs dataset reach
+  // and vice versa. Changing the stored set requires datastore.access:manage in
+  // addition to iam.roles:manage.
+  DatasetSelectorList dataset_selectors = 5;
 }
 
 // Response message for the AuthService.UpdateRole rpc.
