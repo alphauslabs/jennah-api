@@ -176,16 +176,21 @@ message TableDeclaration {
 
   repeated IndexDeclaration indexes = 4;
 
-  // Optional name of a column on this table holding the identity that owns each
-  // row. When set, every read and write of this table additionally carries an
-  // owner-equals-caller predicate, so a principal reaches only rows it owns.
+  // There is deliberately NO per-row authorization field here — no owner column
+  // and no policy predicate.
   //
-  // This is deliberately a single identity column and not a policy language. A
-  // general per-row policy engine over identity claims is a separate, larger
-  // change; ownership is designed as the degenerate case of that future
-  // predicate rather than as a throwaway, so adopting the policy engine later
-  // does not invalidate rows written under this.
-  string owner_column = 5;
+  // A per-row owner predicate is meaningful only when the END USER is a
+  // principal, as it is in systems that mint a credential per application user.
+  // Jennah principals are enterprise members (invite-based, seat-counted) and API
+  // keys; an end user of a tenant's application is neither. A tenant's app calls
+  // with ONE key, so `owner = caller` would resolve to the same principal for
+  // every row and distinguish nothing.
+  //
+  // The dataset is the unit of isolation: every principal that reaches a dataset
+  // reaches all of its rows. A per-row layer needs an END-USER IDENTITY that is
+  // not a Jennah principal — a subject supplied by the tenant's own auth, carried
+  // on the request and bound into the clamp — which is a larger design than a
+  // policy language and is not part of this surface.
 }
 
 // Request message for the SchemaService.DeclareTables rpc.
@@ -245,11 +250,10 @@ message TableSchema {
   // concept and naming it here would imply it were optional.
   repeated string primary_key = 3;
   repeated IndexDeclaration indexes = 4;
-  string owner_column = 5; // empty when the table declares no row ownership
-  SchemaStatus status = 6;
-  string status_detail = 7;
-  google.protobuf.Timestamp created_at = 8;
-  google.protobuf.Timestamp updated_at = 9; // last successful schema change
+  SchemaStatus status = 5;
+  string status_detail = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8; // last successful schema change
 }
 
 // A dataset's usage against its tier's schema ceilings, so a caller can see how
