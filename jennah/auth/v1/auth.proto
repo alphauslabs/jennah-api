@@ -32,7 +32,7 @@ service AuthService {
 
   // Begins a browser/authorization-code login. WEB returns the encrypted state
   // blob in the response (proxy stores it in the __Host- cookie); CLI leaves it
-  // empty and the backend persists state in the oauth_state Spanner row.
+  // empty and the backend persists state in its own oauth_state row.
   // Unauthenticated (interceptor allowlist).
   rpc StartLogin(StartLoginRequest) returns (StartLoginResponse);
 
