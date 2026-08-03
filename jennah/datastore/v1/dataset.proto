@@ -17,17 +17,17 @@ option go_package = "github.com/alphauslabs/jennah-api/datastore";
 // always comes from the verified credential; DatasetId always from the route.
 //
 // Unlike an agent, a dataset is NOT region-pinned to an agent's execution
-// locality: it selects its own Spanner configuration at creation, so application
-// data can be regional for locality or multi-region for globally
-// strongly-consistent reads.
+// locality: it selects its own LOCATION at creation, so application data can be
+// single-region for locality or multi-region for globally strongly-consistent
+// reads.
 service DatasetService {
   // Creates a dataset under the caller's enterprise, registers it in the
   // control-plane directory, and places it on a data-plane database compatible
-  // with the requested Spanner configuration. The EnterpriseId is taken from the
-  // token, never the body.
+  // with the requested location. The EnterpriseId is taken from the token, never
+  // the body.
   //
   // Returns the dataset synchronously. When the data-plane database for the
-  // chosen configuration must be provisioned first, the returned Dataset carries
+  // chosen location must be provisioned first, the returned Dataset carries
   // DATASET_STATUS_PROVISIONING; poll GetDataset until DATASET_STATUS_ACTIVE.
   //
   // Requires datastore.datasets:create AND a dataset selector already covering
@@ -73,9 +73,8 @@ enum DatasetStatus {
   // Ready for use: the data-plane database exists and the directory row is
   // registered. Tables may be declared and data committed.
   DATASET_STATUS_ACTIVE = 1;
-  // The data-plane database for the chosen Spanner configuration is being
-  // created (which can take minutes). No table may be declared yet; poll
-  // GetDataset until ACTIVE.
+  // The data-plane database for the chosen location is being created (which can
+  // take minutes). No table may be declared yet; poll GetDataset until ACTIVE.
   DATASET_STATUS_PROVISIONING = 2;
   // Provisioning failed; status_detail carries the reason. The caller may retry
   // CreateDataset (idempotent on dataset_id) or delete the failed record.
@@ -102,16 +101,18 @@ message Dataset {
 
   string display_name = 3;
 
-  // The Spanner configuration this dataset's data lives on: a regional config
-  // for locality, or a multi-region config (e.g. "nam-eur-asia1", "eur6") for
-  // globally strongly-consistent low-latency reads. Chosen at creation and fixed
-  // for the dataset's lifetime.
+  // Where this dataset's data lives: a single-region location for locality, or a
+  // multi-region one for globally strongly-consistent low-latency reads. Chosen at
+  // creation and fixed for the dataset's lifetime. The available locations are
+  // operator-defined topology, discoverable through the platform's own listing —
+  // they are deliberately NOT a backend vendor's configuration names, so the set
+  // can change without becoming a breaking API change.
   //
-  // The trade is real and the owner picks it deliberately: a multi-region config
+  // The trade is real and the owner picks it deliberately: a multi-region location
   // buys globally consistent reads at the cost of write latency. Bounded-staleness
   // reads (see DataService.QueryData) mitigate read latency without giving up the
   // write geography.
-  string spanner_config = 4;
+  string location = 4;
 
   DatasetStatus status = 5;
   google.protobuf.Timestamp created_at = 6; // server-assigned commit timestamp
@@ -127,9 +128,9 @@ message CreateDatasetRequest {
   string dataset_id = 1; // caller-chosen; unique within the enterprise
   string display_name = 2;
 
-  // Optional Spanner configuration identifier. Must be one the platform offers;
-  // when empty the platform default configuration is used.
-  string spanner_config = 3;
+  // Optional location identifier. Must be one the platform offers; when empty the
+  // platform default location is used.
+  string location = 3;
 
   // When true, mint an API key scoped to this dataset alongside it and return
   // its one-time secret. Purely a convenience for the common "create a dataset,

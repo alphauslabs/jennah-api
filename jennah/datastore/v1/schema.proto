@@ -12,8 +12,8 @@ option go_package = "github.com/alphauslabs/jennah-api/datastore";
 //
 // Tenants declare LOGICAL tables and columns. The control plane validates each
 // declaration against a strict grammar, mints a PHYSICAL identifier for every
-// object, records the logical->physical mapping in the catalog, and issues real
-// Spanner DDL. Callers only ever name logical identifiers; a caller string never
+// object, records the logical->physical mapping in the catalog, and creates real
+// tables. Callers only ever name logical identifiers; a caller string never
 // reaches query text. A logical name absent from the dataset's catalog is a
 // not-found, never a fallthrough to raw interpolation — which is what makes
 // identifier injection structurally impossible rather than merely filtered.
@@ -35,7 +35,7 @@ service SchemaService {
   // exceeding a dataset's table, column, or index ceiling, which returns
   // RESOURCE_EXHAUSTED and never a raw backend error.
   //
-  // Spanner applies schema changes asynchronously, so an accepted declaration
+  // Schema changes are applied asynchronously, so an accepted declaration
   // returns with each table at SCHEMA_STATUS_PENDING; poll GetSchema until every
   // table reaches SCHEMA_STATUS_READY before committing data to it.
   //
@@ -66,7 +66,7 @@ enum SchemaStatus {
   // The physical table exists and matches the declaration; data may be
   // committed to it.
   SCHEMA_STATUS_READY = 1;
-  // The DDL has been accepted and is applying. Spanner schema changes are
+  // The change has been accepted and is applying. Schema changes are
   // queued and can take time, so this is the normal state immediately after a
   // declaration, not an error.
   SCHEMA_STATUS_PENDING = 2;
@@ -74,8 +74,8 @@ enum SchemaStatus {
   SCHEMA_STATUS_FAILED = 3;
 }
 
-// The type of a declared column. These map to Spanner column types; the mapping
-// is the platform's, so a tenant never writes a Spanner type name.
+// The type of a declared column. These map to real storage types; the mapping is
+// the platform's, so a tenant never writes a backend type name.
 enum ColumnType {
   COLUMN_TYPE_UNSPECIFIED = 0;
   COLUMN_TYPE_STRING = 1;

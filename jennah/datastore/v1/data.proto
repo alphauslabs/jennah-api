@@ -27,7 +27,7 @@ option go_package = "github.com/alphauslabs/jennah-api/datastore";
 // the catalog, is a possible later addition rather than a promise.
 service DataService {
   // Applies a set of structured row operations across one or more of the
-  // dataset's tables in a SINGLE Spanner read-write transaction, clamped to
+  // dataset's tables in a SINGLE read-write transaction, clamped to
   // `(EnterpriseId, DatasetId)`. All-or-nothing: if any operation fails, no
   // operation's rows are written.
   //
@@ -71,7 +71,7 @@ service DataService {
 // One typed column value.
 //
 // Values are explicitly typed rather than carried as free-form JSON because
-// application columns are real typed Spanner columns: routing an INT64 through a
+// application columns are real typed columns: routing an INT64 through a
 // JSON number silently loses precision past 2^53, and TIMESTAMP, DATE, and BYTES
 // have no faithful JSON scalar at all. A money column or an id that quietly
 // changes value in transit is exactly the failure this shape exists to prevent.
@@ -374,7 +374,7 @@ message VectorQuery {
 // dataset read at local latency without giving up its write geography.
 message ReadStaleness {
   oneof mode {
-    // Read at any timestamp at most this far in the past, letting Spanner pick a
+    // Read at any timestamp at most this far in the past, letting the backend pick a
     // replica-local timestamp. The usual choice for a low-latency global read.
     google.protobuf.Duration max_staleness = 1;
     // Read at exactly this far in the past.
