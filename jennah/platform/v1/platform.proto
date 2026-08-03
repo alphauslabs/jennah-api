@@ -1,0 +1,116 @@
+syntax = "proto3";
+
+package jennahapi.platform.v1;
+
+import "google/api/annotations.proto";
+
+option go_package = "github.com/alphauslabs/jennah-api/platform";
+
+// PlatformService exposes facts about the platform itself rather than about any
+// enterprise's resources: topology that is operator-owned and identical for every
+// caller.
+//
+// It exists because location discovery outgrew AgentService. The listing began as
+// ListRegions there, when agent workspaces were the only thing that had a
+// placement. The application datastore gave locations a second consumer, and a
+// listing describing where DATASETS may live does not belong on the service that
+// manages agents — a caller holding only datastore permissions would have to ask
+// the agent surface where its data can go.
+service PlatformService {
+  // Lists the locations tenant resources may be placed in, and what each one is
+  // provisioned for. Callers cannot know the valid location values without
+  // asking: the set is an operator-defined allowlist, not a pattern they can
+  // construct.
+  //
+  // Available to any authenticated caller and requires no permission: the set is
+  // non-sensitive operator topology, identical for every enterprise, and a
+  // pre-flight region picker needs it before any resource exists to be authorized
+  // against.
+  //
+  // Replaces AgentService.ListRegions, which was removed rather than deprecated.
+  rpc ListLocations(ListLocationsRequest) returns (ListLocationsResponse) {
+    option (google.api.http) = {get: "/v1/locations"};
+  }
+}
+
+// The kind of placement a location names.
+//
+// This is surfaced because the choice is permanent and the trade is real: a
+// tenant picking where a dataset lives is choosing between write latency and
+// globally consistent reads, and cannot make that choice from an opaque
+// identifier. A client rendering a location picker uses this to say what each
+// option actually costs.
+enum Geography {
+  GEOGRAPHY_UNSPECIFIED = 0;
+  // One cloud region. Lowest write latency; reads outside the region pay the
+  // round trip.
+  GEOGRAPHY_SINGLE_REGION = 1;
+  // Several regions within a continent. Strongly consistent low-latency reads
+  // across them, at the cost of write latency.
+  GEOGRAPHY_MULTI_REGION = 2;
+  // Multiple continents. The widest read geography and the highest write cost.
+  GEOGRAPHY_GLOBAL = 3;
+}
+
+// A location tenant resources may be placed in.
+//
+// A location is a placement identifier and NOT necessarily a single cloud region:
+// it may name a multi-region or global placement (see Geography). That is why a
+// location id is validated by allowlist membership only and never against a
+// region-shaped pattern, and why the ids are Jennah's own rather than a cloud
+// vendor's — the backing topology can change without breaking the API.
+message Location {
+  string id = 1; // e.g. "us-central-1", "nam3"
+  string description = 2; // free-form and human-readable, e.g. "Tokyo, Japan"
+  Geography geography = 3;
+
+  // What this location is provisioned for. A surface's support block is PRESENT
+  // when the location serves that surface and ABSENT when it does not, so there
+  // is no way to express a contradiction like "supported, with no parameters".
+  //
+  // A location may serve one surface, both, or (transiently, mid-rollout) neither.
+  // Each surface carries its own default flag because the defaults are configured
+  // independently and need not name the same location.
+  //
+  // Adding a surface later means adding a field here; it does not change the
+  // meaning of the ones already present.
+  AgentSupport agents = 4;
+  DatasetSupport datasets = 5;
+}
+
+// Agent-workspace support at a location.
+message AgentSupport {
+  // true for the location CreateAgent uses when `region` is omitted.
+  bool is_default = 1;
+}
+
+// Application-datastore support at a location.
+message DatasetSupport {
+  // true for the location CreateDataset uses when `location` is omitted.
+  bool is_default = 1;
+
+  // Output width of the embedding model registered here, or 0 when none is.
+  //
+  // It governs MANAGED vector columns only — the ones that name a source_column
+  // and have their vector generated server-side. A managed column's declared
+  // width must EQUAL this value, because an inline generated write whose output
+  // does not fit the column is rejected outright, so a mismatched declaration
+  // produces a table that accepts no managed write at all.
+  //
+  // 0 means no model is registered here and a managed column is refused at
+  // declare time rather than accepted and left to fail on every row. It does NOT
+  // mean vectors are unavailable: a caller-supplied vector column still works at
+  // this location, and is deliberately unconstrained in width, since the platform
+  // generates nothing for it and must not impose its own model on a path it does
+  // not participate in.
+  int32 embedding_dimensions = 2;
+}
+
+// Request message for the PlatformService.ListLocations rpc. No parameters: the
+// location set is global, not tenant- or page-scoped.
+message ListLocationsRequest {}
+
+// Response message for the PlatformService.ListLocations rpc.
+message ListLocationsResponse {
+  repeated Location locations = 1; // ordered by id
+}

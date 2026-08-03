@@ -9,15 +9,6 @@ option go_package = "github.com/alphauslabs/jennah-api/agent";
 
 // AgentService is the lifecycle control plane for an enterprise's agent workspaces.
 service AgentService {
-  // Lists the Jennah regions an agent workspace can be created in: the region
-  // allowlist is operator-owned topology, so a caller cannot know the valid
-  // `region` values for CreateAgent without asking. The response marks the
-  // default region (the one CreateAgent uses when `region` is omitted). Scoped
-  // to authenticated callers; the set is identical for every enterprise.
-  rpc ListRegions(ListRegionsRequest) returns (ListRegionsResponse) {
-    option (google.api.http) = {get: "/v1/regions"};
-  }
-
   // Creates a new agent workspace under the caller's enterprise. The home region
   // is resolved from the optional `region` field (a Jennah region identifier
   // validated against the configured allowlist) or the platform default region;
@@ -88,7 +79,7 @@ message AgentInstance {
   string enterprise_id = 1;
   string agent_instance_id = 2; // unique within the enterprise
   string agent_name = 3;
-  string region = 4; // Jennah region id, e.g. "us-east-1"
+  string region = 4; // location id this workspace is pinned to, e.g. "us-east-1" (see PlatformService.ListLocations)
   AgentStatus status = 5;
   google.protobuf.Timestamp created_at = 6; // server-assigned commit timestamp
   // Human-readable detail for a non-terminal/failed status (e.g. the region
@@ -97,30 +88,18 @@ message AgentInstance {
   string status_detail = 7;
 }
 
-// A Jennah region an agent workspace can be pinned to. Regions are operator-
-// owned topology (the configured allowlist), identical for every enterprise.
-message Region {
-  string id = 1; // Jennah region id, e.g. "us-central-1"
-  bool is_default = 2; // true for the region CreateAgent uses when `region` is omitted
-  string location = 3; // free-form human-readable location, e.g. "Tokyo, Japan"
-}
-
-// Request message for the AgentService.ListRegions rpc. No parameters: the
-// region set is global, not tenant- or page-scoped.
-message ListRegionsRequest {}
-
-// Response message for the AgentService.ListRegions rpc.
-message ListRegionsResponse {
-  repeated Region regions = 1; // configured regions, ordered by id
-  string default_region = 2; // id of the default region (also flagged is_default in `regions`)
-}
-
 // Request message for the AgentService.CreateAgent rpc.
 message CreateAgentRequest {
   string agent_instance_id = 1; // caller-chosen id, unique within the enterprise
   string agent_name = 2;
-  // Optional Jennah region identifier (e.g. "us-east-1"). Must be in the
-  // configured region allowlist; when empty the platform default region is used.
+  // Optional location identifier (e.g. "us-east-1"). Must be one the platform
+  // offers for agents — see PlatformService.ListLocations, whose entries carry an
+  // `agents` block where they do — and when empty the default agent location is
+  // used.
+  //
+  // The field is named `region` for historical reasons: it predates the platform
+  // having any placement other than an agent's. A location is not required to be
+  // a single cloud region, so the NAME is narrower than the values it accepts.
   string region = 3;
 }
 

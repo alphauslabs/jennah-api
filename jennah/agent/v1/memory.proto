@@ -26,7 +26,7 @@ service MemoryService {
 
   // Evaluates a multi-section read against ONE read snapshot so results are
   // internally consistent across memory types: an optional semantic (vector)
-  // section, an optional graph (GQL) section, and an optional execution-log
+  // section, an optional graph (traversal) section, and an optional execution-log
   // section. Returns one result section per requested section, plus a fused
   // result when `link` is set. An optional `as_of` timestamp is applied
   // uniformly to every section so all sections observe the same historical
@@ -128,11 +128,12 @@ message ExecutionLogStep {
 message VectorChunk {
   string chunk_id = 1; // caller-chosen; unique within the agent slice
   string raw_content = 2;
-  // Optional precomputed embedding. When empty, the gateway generates it from
-  // raw_content server-side (Vertex AI, task_type RETRIEVAL_DOCUMENT). When
-  // supplied, its length MUST equal the data-plane database's configured
-  // embedding width or the whole commit is rejected. float (32-bit) matches the
-  // store's ARRAY<FLOAT32> vector column.
+  // Optional precomputed embedding. When empty, the platform generates it from
+  // raw_content server-side, using the managed embedding model configured for the
+  // agent's location and a retrieval-document task type. When supplied, its length
+  // MUST equal that location's configured embedding width or the whole commit is
+  // rejected. Single-precision (32-bit) because that is the precision vectors are
+  // stored at; sending double would be silently narrowed.
   repeated float embedding = 3;
 
   // Optional caller-supplied attribution stored with the chunk: where it came
@@ -352,14 +353,14 @@ message MetadataFilter {
   Operator operator = 3;
 }
 
-// Graph-section query: a STRUCTURED traversal over the agent's
-// AgentKnowledgeGraph. The gateway BUILDS the GQL server-side from these typed
+// Graph-section query: a STRUCTURED traversal over the agent's knowledge graph.
+// The platform BUILDS the graph query server-side from these typed
 // fields, so no caller-authored query text is ever executed: every generated
 // pattern element carries the (EnterpriseId, AgentInstanceId) clamp
 // unconditionally and the slice cannot be widened. All caller values bind as
 // query parameters; the few caller-supplied identifiers (property keys) are
 // validated against a strict allowlist. This is the "structural injection, not
-// trust" clamp — a free-form GQL string surface was rejected because it would
+// trust" clamp — a free-form query-string surface was rejected because it would
 // require parsing and rewriting untrusted query text.
 //
 // A query is an anchor node set plus zero or more single-hop traversals. Each

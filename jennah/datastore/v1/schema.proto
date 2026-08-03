@@ -86,7 +86,7 @@ enum ColumnType {
   COLUMN_TYPE_DATE = 6;
   COLUMN_TYPE_BYTES = 7;
   COLUMN_TYPE_JSON = 8;
-  // A fixed-width embedding column, searchable by exact COSINE_DISTANCE as a
+  // A fixed-width embedding column, searchable by exact cosine distance as a
   // section of DataService.QueryData. Requires `vector` to be set.
   COLUMN_TYPE_VECTOR = 9;
 }
