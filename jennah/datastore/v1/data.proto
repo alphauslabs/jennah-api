@@ -8,23 +8,7 @@ import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/alphauslabs/jennah-api/datastore";
 
-// DataService is the row transport for a dataset's application tables: a
-// structured write and a structured read, mirroring the memory plane's
-// CommitMemory / QueryMemory.
-//
-// Both are STRUCTURED, not SQL. A caller sends an operation tree naming logical
-// tables and columns; the gateway resolves those through the catalog to
-// platform-minted physical identifiers, injects the `(EnterpriseId, DatasetId)`
-// clamp into every table pattern, and binds every caller value as a query
-// parameter. No caller-authored query text is ever executed.
-//
-// That is a deliberate expressiveness trade. Raw SQL passthrough would re-open
-// both identifier injection and clamp escape, and force a full SQL
-// parser/rewriter onto the hostile path; a structured tree lets the gateway EMIT
-// the statement with the clamp and identifiers under its own control. The gap is
-// real — aggregations, subqueries, and arbitrary expressions are not expressible
-// here — and a controlled read-only SQL surface, parsed and re-clamped through
-// the catalog, is a possible later addition rather than a promise.
+// DataService is the structured row transport for a dataset's application tables.
 service DataService {
   // Applies a set of structured row operations across one or more of the
   // dataset's tables in a SINGLE read-write transaction, clamped to
@@ -35,6 +19,14 @@ service DataService {
   // embedding, and rows in other tables land together or not at all. An
   // operation naming a table absent from the dataset's catalog rejects the whole
   // commit, writing nothing.
+  //
+  // An operation may also make its OWN effect a precondition of the commit (see
+  // RowOperation.expect), which is what makes compare-and-set expressible. An
+  // unmet precondition returns FAILED_PRECONDITION and writes nothing; the
+  // status carries a google.rpc.PreconditionFailure naming the operation, its
+  // table, and the expected and observed counts, so it is distinguishable from
+  // a rejected truncation, which reports the same code. Never retry it blindly:
+  // re-read the contended row and decide again.
   //
   // Requires datastore.data:write and a dataset selector matching dataset_id.
   rpc CommitData(CommitDataRequest) returns (CommitDataResponse) {
@@ -177,9 +169,13 @@ enum OperationType {
   // Matching NO row is not an error: the operation is a no-op and the receipt
   // reports zero rows for the table. Read the receipt's row count when the
   // difference matters, rather than treating a successful commit as proof a row
-  // was there to update.
+  // was there to update — or set `expect` to make the count a precondition of
+  // the commit, which refuses it before anything is written.
   OPERATION_TYPE_UPDATE = 3;
   // Deletes rows matching `where`.
+  //
+  // Matching no row is likewise not an error. Set `expect.at_least_one` for
+  // delete-if-exists.
   OPERATION_TYPE_DELETE = 4;
 }
 
@@ -220,6 +216,61 @@ message RowOperation {
   // what a caller means, so state the key explicitly unless a full-table
   // operation is intended.
   repeated Predicate where = 4;
+
+  // A precondition on THIS operation's own effect. When set and not met, the
+  // WHOLE commit is refused and no row from any table in it is written — the
+  // same consequence a table absent from the catalog already carries, not a
+  // per-operation skip.
+  //
+  // This is what makes compare-and-set, delete-if-exists, and assert-absence
+  // expressible. Without it a commit is atomic but unconditional: an UPDATE
+  // whose predicate matches nothing is a silent no-op that still lets every
+  // other operation land, so an audit row can be persisted beside a state
+  // change that never happened.
+  //
+  // Valid on UPDATE and DELETE only. On INSERT and UPSERT it is refused as an
+  // invalid argument rather than ignored, because a mutation's affected count
+  // is a prediction the transaction never checks — an expectation over it would
+  // attest to something no one measured. Insert-if-absent needs no expectation:
+  // a duplicate primary key already refuses the whole commit.
+  //
+  // A caller looping on failure OWNS ITS OWN BACKOFF. An
+  // optimistic-concurrency loop that re-reads and retries immediately will spin
+  // under contention; the platform does not retry a failed precondition, and
+  // must not, because a blind replay either fails identically or succeeds
+  // against a state the caller never evaluated.
+  RowExpectation expect = 5;
+}
+
+// A precondition on how many rows an operation affects.
+//
+// A message rather than a bare integer because proto3 scalars have no field
+// presence: `0` would be indistinguishable from unset, and exactly-zero is one
+// of the useful preconditions ("apply this only if nothing matches"). Leaving
+// the field unset means no precondition, which is how every operation written
+// before this field existed behaves.
+message RowExpectation {
+  oneof kind {
+    // The operation must affect EXACTLY this many rows.
+    //
+    // Use this for a KEYED write, where the predicate names one row by primary
+    // key and any other count means something the caller did not model:
+    // `exactly: 1` is the compare-and-set. `exactly: 0` asserts absence — the
+    // rows the predicate selects must not exist.
+    //
+    // Do not use it for a predicate that legitimately matches a number of rows
+    // the caller cannot know in advance; `at_least_one` is that condition, and
+    // an over-specified count reads back as a conflict that is not one.
+    int64 exactly = 1;
+
+    // The operation must affect ONE OR MORE rows, whatever the number.
+    //
+    // Use this for a PREDICATE-SELECTED write whose count is not known in
+    // advance — "close every open session for this user, and fail if there were
+    // none". Set to true to require it; false is not a condition and is treated
+    // as no precondition at all.
+    bool at_least_one = 2;
+  }
 }
 
 // Request for DataService.CommitData.
