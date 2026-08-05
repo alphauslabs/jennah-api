@@ -12,12 +12,12 @@ service SchemaService {
   // Declares or evolves the dataset's tables. Idempotent and ADDITIVE:
   // re-declaring an existing table or column is a no-op, and a new column is
   // added as an online change. Destructive changes (dropping a table or column,
-  // or retyping one) are REJECTED in this version — they can rewrite or lose
+  // or retyping one) are REJECTED in this version: they can rewrite or lose
   // live tenant data, and deserve an explicit, separately-authorized migration
   // path rather than being reachable from the ordinary declare call.
   //
   // Validation happens entirely before any DDL is issued, so a rejected
-  // declaration leaves the schema untouched — including when it is refused for
+  // declaration leaves the schema untouched, including when it is refused for
   // exceeding a dataset's table, column, or index ceiling, which returns
   // RESOURCE_EXHAUSTED and never a raw backend error.
   //
@@ -28,7 +28,7 @@ service SchemaService {
   // Requires datastore.schema:manage, which is deliberately NOT part of the
   // built-in member role: declaring a table issues DDL against a shared
   // data-plane database, so it is always an explicit grant to a custom role or
-  // an explicitly scoped key. It IS grantable to an API key — a machine
+  // an explicitly scoped key. It IS grantable to an API key: a machine
   // principal building an app has to be able to declare its own tables.
   rpc DeclareTables(DeclareTablesRequest) returns (DeclareTablesResponse) {
     option (google.api.http) = {
@@ -79,8 +79,8 @@ enum ColumnType {
 
 // Options for a COLUMN_TYPE_VECTOR column.
 message VectorOptions {
-  // Vector width. Every value written to this column — caller-supplied or
-  // server-generated — must have exactly this many elements, and so must a query
+  // Vector width. Every value written to this column, caller-supplied or
+  // server-generated, must have exactly this many elements, and so must a query
   // vector ranked against it. A width mismatch is refused rather than padded or
   // truncated.
   int32 dimensions = 1;
@@ -92,12 +92,12 @@ message VectorOptions {
   //
   // This is the whole of the opt-in, and the two paths differ sharply:
   //
-  //   source_column SET    — a row committed without this vector has it
+  //   source_column SET    : a row committed without this vector has it
   //                          generated from source_column in the same
   //                          transaction as the row. A row that DOES supply a
   //                          vector still stores exactly what was supplied; the
   //                          model is not invoked.
-  //   source_column UNSET  — a row committed without this vector is a typed
+  //   source_column UNSET  : a row committed without this vector is a typed
   //                          error. It is never silently generated, and never
   //                          written as NULL: a column declared to hold an
   //                          embedding that silently holds nothing is invisible
@@ -115,7 +115,7 @@ message VectorOptions {
 
   // Output-only. The embedding generation this column's stored vectors were
   // produced under, assigned by the platform when the column is declared. It is
-  // recorded so a later re-embed is scopable and reversible — you can tell which
+  // recorded so a later re-embed is scopable and reversible: you can tell which
   // vectors came from which model without re-deriving it from write timestamps.
   // Empty for a caller-supplied-only column, where the platform embedded nothing
   // and can attest to nothing.
@@ -154,7 +154,7 @@ message TableDeclaration {
   repeated ColumnDeclaration columns = 2;
 
   // Logical column names forming the table's primary key, in order. The
-  // platform PREPENDS `(EnterpriseId, DatasetId)` to whatever is named here —
+  // platform PREPENDS `(EnterpriseId, DatasetId)` to whatever is named here:
   // that is not expressible in the declaration and cannot be overridden or
   // reordered, because it is what makes cross-slice access structurally
   // impossible rather than merely denied.
@@ -162,7 +162,7 @@ message TableDeclaration {
 
   repeated IndexDeclaration indexes = 4;
 
-  // There is deliberately NO per-row authorization field here — no owner column
+  // There is deliberately NO per-row authorization field here, no owner column
   // and no policy predicate.
   //
   // A per-row owner predicate is meaningful only when the END USER is a
@@ -174,8 +174,8 @@ message TableDeclaration {
   //
   // The dataset is the unit of isolation: every principal that reaches a dataset
   // reaches all of its rows. A per-row layer needs an END-USER IDENTITY that is
-  // not a Jennah principal — a subject supplied by the tenant's own auth, carried
-  // on the request and bound into the clamp — which is a larger design than a
+  // not a Jennah principal (a subject supplied by the tenant's own auth, carried
+  // on the request and bound into the clamp), which is a larger design than a
   // policy language and is not part of this surface.
 }
 
@@ -221,7 +221,7 @@ message ColumnSchema {
   // content it was given).
   //
   // A managed column is readable and returned by queries like any other, but it
-  // cannot be declared, altered, or written by a caller — the platform maintains
+  // cannot be declared, altered, or written by a caller: the platform maintains
   // it in the same transaction as the row it describes. It counts against the
   // table's column ceiling.
   bool managed = 5;
@@ -231,7 +231,7 @@ message ColumnSchema {
 message TableSchema {
   string name = 1; // logical name
   repeated ColumnSchema columns = 2;
-  // Logical primary-key columns AS DECLARED — the `(EnterpriseId, DatasetId)`
+  // Logical primary-key columns AS DECLARED: the `(EnterpriseId, DatasetId)`
   // prefix the platform prepends is not listed, because it is not a tenant
   // concept and naming it here would imply it were optional.
   repeated string primary_key = 3;
@@ -248,7 +248,7 @@ message TableSchema {
 //
 // A limit of -1 means unlimited. A limit currently in report-only rollout is
 // reported here with its real value but does not refuse a declaration; the
-// response cannot distinguish the two, deliberately — a caller should build
+// response cannot distinguish the two, deliberately: a caller should build
 // against the published ceiling regardless of whether it is being enforced yet.
 message SchemaUsage {
   int64 tables = 1;

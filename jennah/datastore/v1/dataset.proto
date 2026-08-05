@@ -19,7 +19,7 @@ service DatasetService {
   // DATASET_STATUS_PROVISIONING; poll GetDataset until DATASET_STATUS_ACTIVE.
   //
   // Requires datastore.datasets:create AND a dataset selector already covering
-  // the requested dataset_id — creating a dataset grants no access to it, for
+  // the requested dataset_id: creating a dataset grants no access to it, for
   // the same reason spawning an agent does not: selectors live on roles and
   // keys, so an auto-grant would mutate a role shared with other members.
   rpc CreateDataset(CreateDatasetRequest) returns (CreateDatasetResponse) {
@@ -39,7 +39,7 @@ service DatasetService {
 
   // Lists the caller enterprise's datasets, ordered by dataset_id, with keyset
   // pagination. The listing is FILTERED to the datasets the caller's dataset
-  // selectors reach — it is not gated with a yes/no, so a caller with no
+  // selectors reach: it is not gated with a yes/no, so a caller with no
   // selectors receives an empty page rather than a permission error.
   rpc ListDatasets(ListDatasetsRequest) returns (ListDatasetsResponse) {
     option (google.api.http) = {get: "/v1/datasets"};
@@ -47,7 +47,7 @@ service DatasetService {
 
   // Deletes a dataset the caller owns: drops its declared tables and removes its
   // catalog and directory records, cascading to all of its application rows.
-  // Returns an erasure receipt — the commit timestamp and per-table row counts —
+  // Returns an erasure receipt (the commit timestamp and per-table row counts),
   // so a caller can evidence a complete erasure. A dataset_id not owned by the
   // caller's enterprise is treated as not found.
   rpc DeleteDataset(DeleteDatasetRequest) returns (DeleteDatasetResponse) {
@@ -78,8 +78,8 @@ message Dataset {
   string enterprise_id = 1;
 
   // Unique within the enterprise. Constrained to the same shape as an
-  // agent_instance_id — at most 128 characters of lowercase letters, digits,
-  // '.', '_' or '-', starting and ending with a letter or digit — and that
+  // agent_instance_id (at most 128 characters of lowercase letters, digits,
+  // '.', '_' or '-', starting and ending with a letter or digit), and that
   // constraint is load-bearing for authorization, not cosmetic: '.' is the
   // selector hierarchy separator, so an id permitted to carry a selector
   // metacharacter could be crafted to collide with a pattern and widen access.
@@ -92,7 +92,7 @@ message Dataset {
   // Where this dataset's data lives: a single-region location for locality, or a
   // multi-region one for globally strongly-consistent low-latency reads. Chosen at
   // creation and fixed for the dataset's lifetime. The available locations are
-  // operator-defined topology, discoverable through the platform's own listing —
+  // operator-defined topology, discoverable through the platform's own listing:
   // they are deliberately NOT a backend vendor's configuration names, so the set
   // can change without becoming a breaking API change.
   //
@@ -127,8 +127,8 @@ message CreateDatasetRequest {
   // The result is an ORDINARY API key on the api-keys surface: its secret is
   // shown exactly once, its scopes and dataset selectors are immutable, and it
   // is revocable and re-creatable independently of the dataset. There is no
-  // key-rotation RPC anywhere in the platform — "rotate" means revoke and
-  // create — so nothing about this key's lifecycle is coupled to the dataset's.
+  // key-rotation RPC anywhere in the platform ("rotate" means revoke and
+  // create), so nothing about this key's lifecycle is coupled to the dataset's.
   //
   // The key receives a dataset selector naming exactly this dataset. It is
   // subject to the same anti-escalation rule as any key: the caller must already
@@ -138,7 +138,7 @@ message CreateDatasetRequest {
   // Scopes for the key minted when create_api_key is set. Each MUST be a subset
   // of the caller's own effective permissions and MUST NOT be management-class.
   // When empty the key defaults to the member-equivalent data-plane scope, which
-  // includes datastore.data:read/write but NOT datastore.schema:manage — so a key
+  // includes datastore.data:read/write but NOT datastore.schema:manage, so a key
   // meant to declare tables must name that permission explicitly.
   repeated string api_key_scopes = 5;
 }
@@ -154,7 +154,7 @@ message CreateDatasetResponse {
 
   // Stable id of the minted key, for revoking it later through the api-keys
   // surface. Empty when no key was minted. The key's non-secret metadata is read
-  // through AuthService.ListApiKeys like any other key's — it is deliberately not
+  // through AuthService.ListApiKeys like any other key's: it is deliberately not
   // duplicated here, so there is one surface describing a key and not two.
   string api_key_id = 3;
 }
@@ -175,7 +175,7 @@ message ListDatasetsRequest {
 
   // Resume a walk of this listing. Empty starts one. Pass back the
   // `next_page_token` from the prior response; when that comes back EMPTY the
-  // listing is exhausted and there is nothing further to fetch — so a caller can
+  // listing is exhausted and there is nothing further to fetch, so a caller can
   // tell "this is everything" from "this page happened to end here".
   //
   // The token is opaque and server-generated. Do not construct, parse, or edit

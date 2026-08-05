@@ -13,7 +13,7 @@ service AgentService {
   // is resolved from the optional `region` field (a Jennah region identifier
   // validated against the configured allowlist) or the platform default region;
   // the region's data-plane instance is provisioned on first use (its tables are
-  // created once per database, and tenancy is row-level — the AgentInstances row
+  // created once per database, and tenancy is row-level: the AgentInstances row
   // is keyed by EnterpriseId). The EnterpriseId is taken from the token, never
   // the body.
   //
@@ -21,8 +21,8 @@ service AgentService {
   // the returned AgentInstance carries status AGENT_STATUS_PROVISIONING; poll
   // GetAgent until it reaches AGENT_STATUS_ACTIVE. (The first implementation
   // provisions inline and returns ACTIVE directly; the PROVISIONING status is
-  // the forward-compatible signal for when region/instance creation — which can
-  // take minutes — is made asynchronous.)
+  // the forward-compatible signal for when region/instance creation, which can
+  // take minutes, is made asynchronous.)
   rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse) {
     option (google.api.http) = {
       post: "/v1/agents"
@@ -93,8 +93,8 @@ message CreateAgentRequest {
   string agent_instance_id = 1; // caller-chosen id, unique within the enterprise
   string agent_name = 2;
   // Optional location identifier (e.g. "us-east-1"). Must be one the platform
-  // offers for agents — see PlatformService.ListLocations, whose entries carry an
-  // `agents` block where they do — and when empty the default agent location is
+  // offers for agents (see PlatformService.ListLocations, whose entries carry an
+  // `agents` block where they do), and when empty the default agent location is
   // used.
   //
   // The field is named `region` for historical reasons: it predates the platform

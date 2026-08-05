@@ -66,7 +66,7 @@ service AuthService {
   // Mints a new API key for the caller's active enterprise. External (gateway)
   // RPC. Authenticated AND gated to ROLE_ROOT/ROLE_ADMIN, resolved live from the
   // Memberships table (never trusted from a claim). The plaintext secret is
-  // returned exactly once, in this response, and is NOT retrievable afterward —
+  // returned exactly once, in this response, and is NOT retrievable afterward,
   // only its sha256 hash is stored. The key resolves to a ROLE_MEMBER-equivalent
   // service principal scoped to the enterprise.
   rpc CreateApiKey(CreateApiKeyRequest) returns (CreateApiKeyResponse) {
@@ -87,7 +87,7 @@ service AuthService {
   // Revokes an API key the caller's enterprise owns, taking effect on the next
   // request (validation is a per-request lookup, so there is no TTL lag).
   // External (gateway) RPC, modeled as a custom method (POST ...:revoke) rather
-  // than DELETE because it does not remove the resource — the row is retained
+  // than DELETE because it does not remove the resource: the row is retained
   // with RevokedAt set, so the key stays listable as revoked. Authenticated AND
   // gated to ROLE_ROOT/ROLE_ADMIN. A key_id not owned by the caller's active
   // enterprise is treated as not found.
@@ -103,7 +103,7 @@ service AuthService {
   // Authenticated AND gated to ROLE_ROOT/ROLE_ADMIN (resolved live from the
   // Memberships table). Membership is NOT granted by email match: this only
   // creates a pending invitation bound to a single-use token, returned exactly
-  // once in the response for the inviter to share — the grant happens when the
+  // once in the response for the inviter to share. The grant happens when the
   // invitee accepts (AcceptInvitation) while signed in. Rejects an email already
   // a member and a second pending invite for the same email.
   rpc InviteMember(InviteMemberRequest) returns (InviteMemberResponse) {
@@ -166,7 +166,7 @@ service AuthService {
   // Memberships row and revoking their refresh sessions scoped to it (so no new
   // access token can be minted for it; an already-issued one lasts until it
   // expires). External (gateway) RPC. Authenticated AND gated to
-  // ROLE_ROOT/ROLE_ADMIN (a member MAY remove themselves — leave). The
+  // ROLE_ROOT/ROLE_ADMIN (a member MAY remove themselves, which is a leave). The
   // enterprise's ROLE_ROOT cannot be removed. A user_id not in the caller's
   // active enterprise is treated as not found.
   rpc RemoveMember(RemoveMemberRequest) returns (RemoveMemberResponse) {
@@ -176,11 +176,11 @@ service AuthService {
   // Transfers the caller's active enterprise's ROLE_ROOT to another member of
   // that enterprise: the target becomes ROLE_ROOT and the caller becomes
   // ROLE_ADMIN, atomically. External (gateway) RPC. Authenticated AND authorized
-  // by identity — ONLY the enterprise's current ROLE_ROOT may call it. Holding
+  // by identity: ONLY the enterprise's current ROLE_ROOT may call it. Holding
   // every permission is not sufficient: a ROLE_ADMIN (whose permission set is
   // identical to ROLE_ROOT's) is refused, and so is an API-key caller. This is
   // the only authority ROLE_ROOT holds that ROLE_ADMIN does not, and the only way
-  // ROLE_ROOT ever moves — it remains non-grantable by ChangeMemberRole and by
+  // ROLE_ROOT ever moves: it remains non-grantable by ChangeMemberRole and by
   // invitation. The target must already be a live member (a user_id, never an
   // email); no membership is created and no pending offer is minted. Takes effect
   // without re-minting a token, because roles are resolved live server-side.
@@ -207,7 +207,7 @@ service AuthService {
 
   // Lists the fixed permission catalog: every grantable "group.resource:action"
   // permission and whether it is management-class. External (gateway) RPC.
-  // Authenticated, but requires no specific permission — the catalog is
+  // Authenticated, but requires no specific permission: the catalog is
   // non-sensitive metadata any member (or the console) may read to discover what
   // is grantable.
   rpc ListPermissions(ListPermissionsRequest) returns (ListPermissionsResponse) {
@@ -253,7 +253,7 @@ service AuthService {
 
   // Deletes a custom role. External (gateway) RPC. Authenticated AND requires the
   // "iam.roles:manage" permission. Hard-fails with FAILED_PRECONDITION when the
-  // role is still assigned to any member — those members must be reassigned
+  // role is still assigned to any member: those members must be reassigned
   // first, so a live membership can never dangle.
   rpc DeleteRole(DeleteRoleRequest) returns (DeleteRoleResponse) {
     option (google.api.http) = {delete: "/v1/roles/{role_id}"};
@@ -283,7 +283,7 @@ enum ResponseMode {
   // Defaults to FRAGMENT.
   RESPONSE_MODE_UNSPECIFIED = 0;
   // Public client / test harness: callback redirects with tokens in the URL
-  // fragment (#access_token=...). NOT for production — the refresh token
+  // fragment (#access_token=...). NOT for production: the refresh token
   // transits the browser.
   RESPONSE_MODE_FRAGMENT = 1;
   // Confidential client (server-side BFF): callback redirects with only a
@@ -360,7 +360,7 @@ message WhoAmIResponse {
   Identity identity = 1;
   Entitlement entitlement = 2;
   // The caller's effective permissions in the active enterprise, resolved
-  // server-side from their membership role (built-in or custom) — never from the
+  // server-side from their membership role (built-in or custom), never from the
   // token. Each is a concrete "group.resource:action" catalog grant. Empty when
   // auth/RBAC is not configured. A client uses this to enable/disable admin
   // controls precisely, instead of inferring capability from the built-in role.
@@ -483,7 +483,7 @@ message LogoutRequest {
 message LogoutResponse {}
 
 // Non-secret metadata for a single API key. The raw secret is NEVER carried
-// here — it is returned only once, in CreateApiKeyResponse. `last4` is a
+// here: it is returned only once, in CreateApiKeyResponse. `last4` is a
 // non-secret display fragment (the last 4 characters) for identifying a key in
 // listings and logs.
 message ApiKey {
@@ -509,14 +509,14 @@ message ApiKey {
   repeated string scopes = 10;
   // Agents this key may reach, as agent selectors (an exact agent_instance_id, a
   // "prefix.*" subtree, or "*" for every agent in the enterprise), fixed at
-  // creation. Empty means the key can reach NO agent — a key never inherits the
+  // creation. Empty means the key can reach NO agent: a key never inherits the
   // selectors of the user who created it. Omitted entirely when the caller lacks
   // the agent.access:read permission.
   repeated string agent_selectors = 11;
   // Datasets this key may reach, as dataset selectors, under exactly the same
   // rules as agent_selectors above and in a SEPARATE namespace: an exact
   // dataset_id, a "prefix.*" subtree, or "*" for every dataset in the
-  // enterprise. Empty means the key can reach NO dataset — which is why an
+  // enterprise. Empty means the key can reach NO dataset, which is why an
   // unscoped key, whose default permissions include datastore.data:read/write,
   // still reaches nothing until a selector is set.
   //
@@ -531,7 +531,7 @@ message ApiKey {
 
 // Request message for the AuthService.CreateApiKey rpc.
 //
-// The new key is bound to the caller's active enterprise — the enterprise_id
+// The new key is bound to the caller's active enterprise: the enterprise_id
 // scope of the access token used to make the call. There is intentionally no
 // enterprise field here: a member belonging to more than one enterprise mints
 // a key for whichever enterprise their token is currently scoped to. To target
@@ -570,7 +570,7 @@ message CreateApiKeyRequest {
 // Response message for the AuthService.CreateApiKey rpc.
 //
 // `secret` is the full plaintext key (prefixed `jennah_sk_`), returned exactly
-// once — it cannot be retrieved again, so the caller must store it now. `key`
+// once: it cannot be retrieved again, so the caller must store it now. `key`
 // holds the non-secret metadata for the same key.
 message CreateApiKeyResponse {
   string secret = 1; // one-time plaintext key: "jennah_sk_..."
@@ -609,7 +609,7 @@ enum InvitationStatus {
 }
 
 // Non-secret metadata for a single enterprise invitation. The invite token is
-// NEVER carried here — it is returned only once, in InviteMemberResponse; only
+// NEVER carried here: it is returned only once, in InviteMemberResponse; only
 // its sha256 hash is stored.
 message Invitation {
   string invitation_id = 1; // stable id (used in the revoke path)
@@ -629,7 +629,7 @@ message Member {
   string user_id = 1; // jennah user id
   string email = 2; // the member's primary email
   // Built-in role within the enterprise. ROLE_UNSPECIFIED when the member holds
-  // a custom role instead — see custom_role_id.
+  // a custom role instead, see custom_role_id.
   Role role = 3;
   google.protobuf.Timestamp joined_at = 4; // Memberships row creation time
   // Set when the member holds a custom RBAC role rather than a built-in one; it
@@ -647,7 +647,7 @@ message InviteMemberRequest {
 // Response message for the AuthService.InviteMember rpc.
 //
 // `token` is the one-time invite token (prefixed `jennah_inv_`), returned
-// exactly once for the inviter to share out-of-band — it cannot be retrieved
+// exactly once for the inviter to share out-of-band: it cannot be retrieved
 // again. `invitation` holds the non-secret metadata for the same invite.
 message InviteMemberResponse {
   string token = 1; // one-time invite token: "jennah_inv_..."
@@ -796,13 +796,13 @@ message CustomRole {
   google.protobuf.Timestamp updated_at = 6; // last modification; unset until first update
   // Agents holders of this role may reach, as agent selectors: an exact
   // agent_instance_id, a "prefix.*" subtree (the separator is "."), or "*" for
-  // every agent in the enterprise. Empty means holders reach NO agent — this is
+  // every agent in the enterprise. Empty means holders reach NO agent: this is
   // the default for a role created without selectors, and it is what makes agent
   // access opt-in. Omitted entirely when the caller lacks agent.access:read.
   repeated string agent_selectors = 7;
   // Datasets holders of this role may reach, as dataset selectors, in a separate
   // namespace under the same grammar and matching rules. Empty means holders
-  // reach NO dataset — the default, and what makes dataset access opt-in even
+  // reach NO dataset: the default, and what makes dataset access opt-in even
   // though the built-in member role carries the datastore data-plane
   // permissions. Omitted entirely when the caller lacks datastore.access:read.
   repeated string dataset_selectors = 8;
@@ -821,8 +821,8 @@ message AgentSelectorList {
 // counterpart to AgentSelectorList and used for the same reason.
 //
 // It is a separate message rather than a reuse of AgentSelectorList because the
-// two are set independently — an update may replace one namespace's selectors
-// and leave the other's untouched — and a shared type would make "unset" mean
+// two are set independently (an update may replace one namespace's selectors
+// and leave the other's untouched), and a shared type would make "unset" mean
 // "leave both alone", collapsing that distinction. A shared, namespace-neutral
 // type would have been cleaner from the start, but renaming AgentSelectorList
 // now would break every generated client for no behavioral gain.
