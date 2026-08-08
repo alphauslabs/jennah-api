@@ -157,6 +157,43 @@ message Predicate {
 // Commit
 // ---------------------------------------------------------------------------
 
+// An assignment that computes a column's new value from that column's CURRENT
+// value: `column = column ± operand`, evaluated by the backend inside the
+// commit's transaction.
+//
+// This is what makes an atomic counter and a write-side rollup possible without
+// a read: no prior SELECT, no client-side arithmetic, and no compare-and-set
+// retry loop. It is deliberately NOT an expression language — one column
+// reference, one operator, one literal, no nesting. A tree would need
+// precedence, type inference, and NULL-propagation rules, and at that point
+// whether caller input can reach query text stops being auditable by reading
+// the compiler.
+message ColumnExpression {
+  // The arithmetic applied. There is no default: an unspecified operator is
+  // refused rather than treated as ADD, because guessing the operator on a
+  // value the caller cannot re-derive is precisely the class of silent wrong
+  // answer this message exists to avoid. (Predicate.Operator defaults to
+  // EQUALS; that is a comparison, and a wrong guess there returns wrong rows
+  // rather than storing a wrong number.)
+  enum Operator {
+    OPERATOR_UNSPECIFIED = 0;
+    OPERATOR_ADD = 1;
+    // Kept as its own operator rather than expressed as adding a negative
+    // literal: a caller writing a debit should not have to encode it as a sign.
+    OPERATOR_SUBTRACT = 2;
+  }
+
+  // Logical column name, resolved through the dataset catalog. It MUST equal
+  // the map key this expression is stored under — the redundancy is checked,
+  // not ignored, so a mismatch is a typed error rather than a silent write to
+  // whichever of the two the server happened to read.
+  string column = 1;
+  Operator operator = 2;
+  // The right-hand literal, bound as a query parameter and never interpolated,
+  // exactly as Predicate.value is. Must be an int64 matching the column's type.
+  Value operand = 3;
+}
+
 // What a row operation does.
 enum OperationType {
   OPERATION_TYPE_UNSPECIFIED = 0;
@@ -246,6 +283,62 @@ message RowOperation {
   // must not, because a blind replay either fails identically or succeeds
   // against a state the caller never evaluated.
   RowExpectation expect = 5;
+
+  // Assignments computed from a column's own current value, keyed by logical
+  // column name. Combined with `row`: a commit may set some columns to literals
+  // and compute others in the same operation.
+  //
+  // This is a SEPARATE MAP rather than an expression branch on `Value`, and it
+  // must stay one. `Value` is also the type of `Predicate.value`, so a branch
+  // there would make "compare a column against an expression" syntactically
+  // valid and then have to be refused at runtime. A type that admits states the
+  // system must police is worse than a second field.
+  //
+  // Rules, each of which is a refusal and not a silent adjustment:
+  //
+  //   * UPDATE ONLY. An expression reads the row it writes, and INSERT/UPSERT
+  //     are addressed by key as mutations that carry no reference to a current
+  //     value. On INSERT, UPSERT, and DELETE an expression is an invalid
+  //     argument rather than ignored.
+  //   * INT64, NOT NULL columns only. Arithmetic over an absent value yields an
+  //     absent value, so an expression on a nullable column would silently
+  //     erase the counter; the platform will not substitute zero for absent
+  //     either, since that makes "absent" and "zero" indistinguishable.
+  //     FLOAT64 is excluded because its overflow is a silent +Inf and because
+  //     accumulated float addition is order-dependent, which would make a
+  //     rollup's value depend on interleaving.
+  //   * ONE ASSIGNMENT PER COLUMN. A column named in both `row` and
+  //     `set_expressions` is refused rather than resolved by precedence.
+  //   * NO TENANCY OR PLATFORM-MANAGED COLUMN may be a target, enforced on this
+  //     path independently of the literal path.
+  //   * AN UNREPRESENTABLE RESULT ABORTS THE WHOLE COMMIT with OUT_OF_RANGE.
+  //     Nothing wrapped or saturated is ever stored.
+  //
+  // AN ABSENT ROW IS A NO-OP, NOT AN IMPLICIT CREATE. `total = total + 1`
+  // against a row that does not exist affects zero rows and does nothing —
+  // there is no value to compute from, and no upsert-with-expression to offer
+  // because Spanner's INSERT-OR-UPDATE is mutation-only. An increment that
+  // vanishes is indistinguishable in the receipt from one that landed, and for
+  // a value accumulated over many commits that loss is unrecoverable. So PAIR
+  // EVERY EXPRESSION WITH `expect`: create the counter row once, tolerating
+  // AlreadyExists, then increment with `expect.exactly: 1` forever after.
+  //
+  // AN IDEMPOTENCY KEY IS REQUIRED on any commit carrying an expression. Every
+  // other write this API accepts is naturally idempotent — INSERT collides on
+  // its key, UPSERT and UPDATE assign absolute values — so a caller whose
+  // request times out with an unknown outcome may safely resend it. This is the
+  // first write where a resend DOUBLE-APPLIES, silently, with a second receipt
+  // that looks exactly like a first. A commit with an expression and no
+  // `CommitDataRequest.idempotency_key` is refused before any transaction
+  // opens. A commit of absolute values still needs no key.
+  //
+  // WRITE-RATE CEILING: a single Spanner row tops out at a few hundred writes
+  // per second under lock contention, and expressions make it easy to aim every
+  // writer at one counter. Above that rate use SHARDED COUNTERS — N rows
+  // incremented at random, summed on read — accepting the trade-off that a
+  // sharded counter gives up whole-counter conditionals, since no single row
+  // holds the total to compare against.
+  map<string, ColumnExpression> set_expressions = 6;
 }
 
 // A precondition on how many rows an operation affects.
