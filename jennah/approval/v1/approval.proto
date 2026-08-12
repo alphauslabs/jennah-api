@@ -1,0 +1,693 @@
+syntax = "proto3";
+
+package jennahapi.approval.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/alphauslabs/jennah-api/approval";
+
+// ApprovalService puts a decision to a named human and records the answer.
+//
+// The shape of the feature in one paragraph: an agent (usually a key-authenticated
+// service principal) creates an approval naming one or more approvers; each
+// approver is emailed a single-use capability token; the approver's browser reads
+// the request read-only and then submits an explicit decision; the first decision
+// that satisfies the quorum — or any rejection — moves the approval to a terminal
+// status that never changes again. An approval that reaches its deadline undecided
+// fails closed. Jennah RECORDS the decision; it does not enforce it. Nothing here
+// stops an agent that ignores a rejection — the enforcement point is the caller's
+// own code.
+//
+// Two methods (DescribeApprovalByToken, SubmitApprovalDecision) are unauthenticated
+// in the bearer-token sense: their caller is a human holding an emailed token who
+// may have no jennah account at all. Exemption from bearer-token auth is not
+// exemption from authentication — they authenticate their caller by validating the
+// presented token, exactly as the marketplace registration method authenticates by
+// exchanging a provider token.
+service ApprovalService {
+  // Creates an approval request under the caller's enterprise and attempts to
+  // notify its approvers. External (gateway) RPC. Authenticated, and gated on
+  // `approval.requests:create`; when `agent_id` is set the caller's credential
+  // must additionally reach that agent under the agent-selector rules, so
+  // approval authority cannot be used to route around agent reach.
+  //
+  // Success means the approval is DURABLY RECORDED. It does not mean anyone was
+  // notified: delivery is attempted after commit and reported per approver on
+  // read (see Approver.delivery_state). A creation whose mail could not be sent
+  // is still a pending approval, not a failure.
+  //
+  // Idempotent on `request_key`: a replay with the same key and the same content
+  // returns the existing approval with `already_existed` true, mints no second
+  // token, and sends no second email. A replay reusing the key with DIFFERENT
+  // content is ALREADY_EXISTS rather than a silent hand-back of the first
+  // question's receipt.
+  //
+  // Refused in full — no approval row, no mail to anyone in the request — when
+  // any listed approver is unaddressable (see AddApprover for what makes an
+  // address reachable), when `require_authenticated_decider` is set alongside a
+  // non-member approver, when the approvers eligible to decide are fewer than
+  // `required_approvals`, or when an entitlement ceiling is reached.
+  rpc CreateApproval(CreateApprovalRequest) returns (CreateApprovalResponse) {
+    option (google.api.http) = {
+      post: "/v1/approvals"
+      body: "*"
+    };
+  }
+
+  // Reads one approval with its approvers, their delivery state, and its recorded
+  // decisions. External (gateway) RPC. Authenticated. Readable by a holder of
+  // `approval.requests:read`, and — with no permission at all — by a listed
+  // approver reading what was addressed to them.
+  //
+  // Expiry is applied at READ: an approval past its deadline is reported terminal
+  // whether or not a background pass has materialized that. An approval_id not
+  // owned by the caller's enterprise is not found, disclosing nothing about its
+  // existence, status, or approvers.
+  rpc GetApproval(GetApprovalRequest) returns (GetApprovalResponse) {
+    option (google.api.http) = {get: "/v1/approvals/{approval_id}"};
+  }
+
+  // Lists the caller enterprise's approvals, newest first, with
+  // page_size/page_token pagination. External (gateway) RPC. Authenticated.
+  //
+  // What a caller sees depends on what they hold: with `approval.requests:read`,
+  // the enterprise's approvals (minus any scoped to an agent outside their
+  // reach); without it, only the approvals that list the caller as an approver.
+  // `only_awaiting_me` narrows either case to the caller's own queue, which is
+  // what the console's approvals inbox renders.
+  rpc ListApprovals(ListApprovalsRequest) returns (ListApprovalsResponse) {
+    option (google.api.http) = {get: "/v1/approvals"};
+  }
+
+  // Withdraws a PENDING approval, making it terminally CANCELLED and rendering
+  // every outstanding capability token unspendable. External (gateway) RPC.
+  // Authenticated, gated on `approval.requests:cancel`.
+  //
+  // Cancelling an already-terminal approval is FAILED_PRECONDITION, not a silent
+  // success: the caller asked to stop something that had already happened, and
+  // needs to know which.
+  rpc CancelApproval(CancelApprovalRequest) returns (CancelApprovalResponse) {
+    option (google.api.http) = {
+      post: "/v1/approvals/{approval_id}:cancel"
+      body: "*"
+    };
+  }
+
+  // Blocks until the approval reaches a terminal status or the wait elapses, then
+  // returns its current state. External (gateway) RPC. Authenticated, same read
+  // authority as GetApproval.
+  //
+  // A bounded server-side poll, not a stream: the effective wait is clamped to a
+  // platform maximum well under the load balancer's idle timeout, and reaching
+  // that maximum returns the still-PENDING approval AS A SUCCESS. A caller that
+  // treats a pending return as an error will thrash; the correct loop is to call
+  // again. Safe to call repeatedly, and it holds no resource a caller must
+  // release.
+  rpc WaitApproval(WaitApprovalRequest) returns (WaitApprovalResponse) {
+    option (google.api.http) = {
+      post: "/v1/approvals/{approval_id}:wait"
+      body: "*"
+    };
+  }
+
+  // Re-sends the notification for a still-PENDING approval. External (gateway)
+  // RPC. Authenticated, gated on `approval.requests:create` (a resend sends mail,
+  // so it is a create-class act, not a read).
+  //
+  // Reuses the approver's EXISTING token rather than minting a new one: a resend
+  // must never invalidate a message already in flight, since the first copy may
+  // be in a mailbox the approver is about to open. Both copies therefore work,
+  // and the first one used spends the token for both. Resends count against the
+  // enterprise's notification ceiling.
+  rpc ResendApprovalNotification(ResendApprovalNotificationRequest) returns (ResendApprovalNotificationResponse) {
+    option (google.api.http) = {
+      post: "/v1/approvals/{approval_id}:resend"
+      body: "*"
+    };
+  }
+
+  // --- Token-authenticated public surface (no bearer credential) ---
+
+  // Renders one approval to the holder of an emailed capability token. External
+  // (gateway) RPC. UNAUTHENTICATED in the bearer sense and on the interceptor's
+  // unauthenticated allowlist; it authenticates its caller by resolving the
+  // presented token to a live approver record, and refuses when it cannot.
+  //
+  // STRICTLY READ-ONLY, and that is a security requirement rather than a
+  // nicety: mail scanners, corporate link-rewriting proxies, and client
+  // prefetchers fetch every URL in a message, so nothing reachable by a fetch may
+  // record a decision or spend a token. Calling this repeatedly is safe and
+  // changes nothing.
+  //
+  // The token is taken in the BODY. It appears in no path and no query string
+  // anywhere in this service, because the emailed link carries it in the URL
+  // FRAGMENT — which browsers do not send to servers — so it reaches the
+  // approver's browser and neither the console's access log, a referrer header, a
+  // link-rewriting proxy's telemetry, nor jennah's own logs.
+  //
+  // A token that is expired, spent, revoked, cancelled, or never issued is
+  // refused with ONE indistinguishable message, so a caller cannot probe which
+  // tokens exist.
+  rpc DescribeApprovalByToken(DescribeApprovalByTokenRequest) returns (DescribeApprovalByTokenResponse) {
+    option (google.api.http) = {
+      post: "/v1/approvals:describe"
+      body: "*"
+    };
+  }
+
+  // Records a decision, once. External (gateway) RPC. On the unauthenticated
+  // allowlist for the token origin, and dynamically authorized in the handler for
+  // both origins — the permission catalog deliberately has NO decide action,
+  // because authority to decide is capability-based (holding the emailed token,
+  // or being a listed approver) rather than something a role can grant.
+  //
+  // Exactly two origins are accepted:
+  //   (a) a valid unspent capability token, presented in the body; or
+  //   (b) an authenticated human who is a listed approver on that approval.
+  // A KEY-authenticated caller is refused unconditionally, with or without a
+  // valid token: an agent may raise a request but may never satisfy its own, and
+  // a human decision may not be rendered by a service principal. An authenticated
+  // human who is not a listed approver is refused too, enterprise admin or not.
+  //
+  // This is the explicit submission the read-only render is deliberately split
+  // from: it carries the decision value, and no fetch of any emailed URL reaches
+  // it. Terminal is terminal — a second submission, including one matching the
+  // recorded outcome, is refused as already-decided rather than recorded twice.
+  rpc SubmitApprovalDecision(SubmitApprovalDecisionRequest) returns (SubmitApprovalDecisionResponse) {
+    option (google.api.http) = {
+      post: "/v1/approvals:decide"
+      body: "*"
+    };
+  }
+
+  // --- Approver allowlist: who this enterprise's agents may email at all ---
+
+  // Lists the enterprise's approver allowlist entries. External (gateway) RPC.
+  // Authenticated, gated on `approval.approvers:read`.
+  rpc ListApprovers(ListApproversRequest) returns (ListApproversResponse) {
+    option (google.api.http) = {get: "/v1/approvers"};
+  }
+
+  // Adds an email address or a domain to the enterprise's approver allowlist.
+  // External (gateway) RPC. Authenticated, gated on `approval.approvers:manage`,
+  // which is management-class and therefore can never appear in an API key's
+  // scope — a key-authenticated caller is refused outright.
+  //
+  // Members of the enterprise are ALWAYS addressable and need no entry here. The
+  // allowlist exists only for non-members, and the refusal of key-authenticated
+  // callers is the point of the whole mechanism: an agent must not be able to
+  // widen the set of people the platform will mail on its behalf, or the platform
+  // becomes an unbranded phishing and spam channel.
+  rpc AddApprover(AddApproverRequest) returns (AddApproverResponse) {
+    option (google.api.http) = {
+      post: "/v1/approvers"
+      body: "*"
+    };
+  }
+
+  // Removes an allowlist entry. External (gateway) RPC. Authenticated, gated on
+  // `approval.approvers:manage`; key-authenticated callers refused.
+  //
+  // Removal narrows future addressing only. Approvals already created keep their
+  // approvers and their live tokens, because a person mid-decision is not made
+  // undecidable by an administrative edit.
+  rpc RemoveApprover(RemoveApproverRequest) returns (RemoveApproverResponse) {
+    option (google.api.http) = {delete: "/v1/approvers/{entry_id}"};
+  }
+}
+
+// How many approvals an approval needs.
+//
+// A client MUST NOT infer a rule by exclusion. "Not ANY_ONE" does not mean ALL,
+// today or ever: a rule added in a later version arrives at an older client as
+// QUORUM_UNSPECIFIED, and treating that as any known rule would report an outcome
+// nobody authorized. The server holds itself to the same rule — an unrecognized
+// STORED rule is unresolvable rather than resolved under a default.
+enum Quorum {
+  // Unknown to this client's proto version. Not a default and not a synonym for
+  // any rule below; read `required_approvals` and `approvals_recorded` instead,
+  // which stay meaningful across versions.
+  QUORUM_UNSPECIFIED = 0;
+  // The first recorded approval is terminal. Persists a required count of 1.
+  QUORUM_ANY_ONE = 1;
+  // Every listed approver must approve. Persists a required count equal to the
+  // size of the approver set.
+  QUORUM_ALL = 2;
+}
+
+// Lifecycle of an approval. PENDING is the only non-terminal value; the other
+// four never change once reached, for any reason, through any operation.
+enum ApprovalStatus {
+  APPROVAL_STATUS_UNSPECIFIED = 0;
+  APPROVAL_STATUS_PENDING = 1;
+  APPROVAL_STATUS_APPROVED = 2;
+  APPROVAL_STATUS_REJECTED = 3;
+  // Reached its deadline undecided, under an on_expire of ON_EXPIRE_EXPIRE.
+  APPROVAL_STATUS_EXPIRED = 4;
+  // Withdrawn by the enterprise before any decision.
+  APPROVAL_STATUS_CANCELLED = 5;
+}
+
+// What an undecided approval becomes at its deadline.
+//
+// Note what is NOT here: there is no value that approves an undecided request.
+// That absence is the contract — no configuration, tier, entitlement, or request
+// field can auto-approve on timeout, because the alternative is approving things
+// nobody saw.
+enum OnExpire {
+  // Treated as ON_EXPIRE_DENY.
+  ON_EXPIRE_UNSPECIFIED = 0;
+  // Resolve as REJECTED: the deadline itself is the refusal. The default, and the
+  // right choice when a downstream caller branches on approved-vs-not.
+  ON_EXPIRE_DENY = 1;
+  // Resolve as EXPIRED: nobody answered, and the caller wants that distinguishable
+  // from a human's refusal. Still fails closed — EXPIRED is not APPROVED.
+  ON_EXPIRE_EXPIRE = 2;
+}
+
+// Where an approver's notification is in its delivery lifecycle. This exists so
+// that "the human has not responded" is distinguishable from "the human was never
+// reached" — an approver stranded by a bad address is a different operational
+// problem from one who is simply thinking about it.
+enum DeliveryState {
+  DELIVERY_STATE_UNSPECIFIED = 0;
+  // Owed but not yet accepted by the provider: either not attempted yet, or a
+  // transient failure awaiting a retry with backoff.
+  DELIVERY_STATE_PENDING = 1;
+  // Accepted by the mail provider. This is handoff, not proof of arrival in a
+  // human's inbox; the platform does not process bounces or read receipts.
+  DELIVERY_STATE_DELIVERED = 2;
+  // Terminally undeliverable: a permanent provider error, or transient failures
+  // past the attempt bound. `last_delivery_error` is retained and no further
+  // attempt is made without an explicit resend.
+  DELIVERY_STATE_FAILED = 3;
+}
+
+// The channel an approver is notified over. Only email ships; the field exists so
+// that adding a channel later is a new value rather than a new message.
+enum ApproverChannel {
+  APPROVER_CHANNEL_UNSPECIFIED = 0;
+  APPROVER_CHANNEL_EMAIL = 1;
+}
+
+// The decision an approver renders.
+enum DecisionValue {
+  DECISION_VALUE_UNSPECIFIED = 0;
+  DECISION_VALUE_APPROVE = 1;
+  // Terminal immediately under EVERY quorum rule: one refusal ends the request
+  // however many approvals preceded it.
+  DECISION_VALUE_REJECT = 2;
+}
+
+// What an approver-allowlist entry matches.
+enum AllowlistKind {
+  ALLOWLIST_KIND_UNSPECIFIED = 0;
+  // One exact address (compared lower-cased).
+  ALLOWLIST_KIND_EMAIL = 1;
+  // Every address in a domain. Broader, and correspondingly a bigger grant: it
+  // admits addresses that do not exist yet.
+  ALLOWLIST_KIND_DOMAIN = 2;
+}
+
+// One human an approval was put to, with the delivery state of their notification.
+//
+// The capability token is NEVER carried here or anywhere else in a response: it is
+// stored only as a hash, and it reaches exactly one place — the emailed link.
+message Approver {
+  // Stable id within the approval; the handle for a targeted resend and the
+  // identity recorded on an external approver's audit row.
+  string approver_id = 1;
+  string email = 2; // addressed-to, lower-cased
+  // The member this approver resolved to. Empty for an external approver, which
+  // is what `is_external` reports directly.
+  string user_id = 3;
+  // True when the address is not a live member of the enterprise, and was
+  // therefore admitted by an allowlist entry rather than by membership.
+  bool is_external = 4;
+  ApproverChannel channel = 5;
+  DeliveryState delivery_state = 6;
+  int32 delivery_attempts = 7;
+  // Provider-reported reason for the most recent failure, retained after a
+  // terminal FAILED so an operator can act on it. Empty while delivery is
+  // succeeding.
+  string last_delivery_error = 8;
+  google.protobuf.Timestamp last_attempt_at = 9;
+  // Set once this approver has recorded a decision. An approver whose token is
+  // spent but who has not decided cannot exist: spending the token IS recording
+  // the decision, in one transaction.
+  bool decided = 10;
+}
+
+// One approver as named on a creation request.
+message ApproverSpec {
+  // The address to put the request to. A live member's email is always
+  // addressable; any other address must match the enterprise's approver
+  // allowlist, or the whole creation is refused naming this address.
+  string email = 1;
+  // Defaults to APPROVER_CHANNEL_EMAIL, the only channel that ships.
+  ApproverChannel channel = 2;
+}
+
+// A durable, enterprise-scoped question put to one or more humans.
+message Approval {
+  // Enterprise that owns this approval, resolved from the caller's credential.
+  // Echoed for clarity; it is never accepted from a request body.
+  string enterprise_id = 1;
+  string approval_id = 2; // server-assigned; resolvable only under its enterprise
+  // The agent this approval is about, if any. A SOFT reference: not an enforced
+  // key, so an approval and its audit record outlive deletion of the agent, and
+  // deleting an agent never has to reason about approvals.
+  string agent_id = 3;
+  string request_key = 4; // the caller's idempotency key, as supplied
+  string title = 5; // short line, used as the notification subject
+  string summary = 6; // the human-readable ask, rendered into the mail body
+  // Structured detail for the request. Rendered into a message that LEAVES the
+  // platform, so it is written to be read by a human outside it; the platform's
+  // redaction policy applies on the mail path independently of the storage path.
+  google.protobuf.Struct payload = 7;
+
+  Quorum quorum = 8;
+  // How many approvals resolve this request: 1 for ANY_ONE, the approver count
+  // for ALL. Assigned at creation and immutable thereafter. This column, not the
+  // rule name, is the sole authority on the threshold — resolution is a count
+  // comparison, which is why it stays correct for a rule this client predates.
+  int32 required_approvals = 9;
+  // Approvals recorded so far, so a partially-approved request is legible rather
+  // than merely PENDING.
+  int32 approvals_recorded = 10;
+  // When set, the user who created this approval may not decide it, even if they
+  // are a listed approver (four-eyes).
+  bool require_distinct_approver = 11;
+  // When set, the emailed capability link will not be accepted as authority: only
+  // an authenticated listed approver may decide. Creatable only where every
+  // approver is a member, since a non-member has no account to sign in with.
+  bool require_authenticated_decider = 12;
+
+  // Carries the outcome once terminal: APPROVED and REJECTED are the recorded
+  // decision, EXPIRED and CANCELLED are its absence. There is no second outcome
+  // field to disagree with this one.
+  ApprovalStatus status = 13;
+  google.protobuf.Timestamp decided_at = 14; // unset while PENDING
+
+  string created_by_user_id = 15; // empty when created by an API key
+  string created_by_key_id = 16; // empty when created by a signed-in human
+  google.protobuf.Timestamp created_at = 17; // server-assigned commit timestamp
+  // The deadline. Reaching it undecided is terminal per `on_expire`, and that is
+  // evaluated at READ — a read after this instant never reports PENDING, whether
+  // or not a background pass has run.
+  google.protobuf.Timestamp expires_at = 18;
+  OnExpire on_expire = 19;
+
+  // Recorded at creation, returned unchanged, and INTERPRETED BY NOTHING in this
+  // version. They exist so a later durable-execution capability can deliver a
+  // decision as a run signal without a change to stored state.
+  string notify_run_id = 20;
+  string notify_signal_name = 21;
+
+  // Every approver with their delivery state. Present on list responses too,
+  // because "created" is not "delivered" and a listing that hides that strands an
+  // approver who never got the mail.
+  repeated Approver approvers = 22;
+
+  // When true and `agent_id` is set, the terminal outcome is written into that
+  // agent's memory as an execution-log step.
+  bool record_to_memory = 23;
+}
+
+// One recorded decision. Append-only: no API modifies or deletes these, for any
+// caller, at any permission level.
+message ApprovalDecision {
+  string decision_id = 1;
+  string approver_id = 2; // the Approver row this decision was rendered against
+  DecisionValue decision = 3;
+  string comment = 4; // optional, approver-supplied
+  google.protobuf.Timestamp decided_at = 5;
+  // The deciding member's user id. Empty for an external approver, whose identity
+  // is the approver record's email plus `approver_id`.
+  string actor_user_id = 6;
+  // True when the decision arrived over a capability token rather than an
+  // authenticated session — the difference between "someone with access to that
+  // mailbox" and "that person, signed in".
+  bool via_token = 7;
+  string source_ip = 8;
+  string user_agent = 9;
+  // Digest of the content as RENDERED to this approver. This is what makes the
+  // record answer a compliance question: not merely that they approved an
+  // identifier, but that they were shown the request this digest covers.
+  string seen_digest = 10;
+}
+
+// One entry on the enterprise's approver allowlist: an address, or a domain, that
+// this enterprise's agents may put approvals to despite not being members.
+message ApproverAllowlistEntry {
+  string entry_id = 1;
+  AllowlistKind kind = 2;
+  // The address (lower-cased) or the bare domain ("example.com", no "@").
+  string value = 3;
+  string added_by_user_id = 4; // always a human: a key cannot edit this list
+  google.protobuf.Timestamp created_at = 5;
+}
+
+// Request message for the ApprovalService.CreateApproval rpc.
+message CreateApprovalRequest {
+  // Caller-supplied idempotency key, unique per enterprise and agent reference. A
+  // replay with the same key and content returns the first approval; a replay
+  // with the same key and DIFFERENT content is refused. Required: without one, a
+  // retried create emails everyone twice.
+  string request_key = 1;
+  // Optional agent this approval is about. When set, the caller's credential must
+  // reach it under the agent-selector rules.
+  string agent_id = 2;
+  string title = 3;
+  string summary = 4;
+  google.protobuf.Struct payload = 5;
+
+  // The humans to ask. Refused in full if any address is unaddressable.
+  repeated ApproverSpec approvers = 6;
+  Quorum quorum = 7; // required; an unrecognized rule is refused, not defaulted
+  // Optional. When set it MUST equal the value derived from `quorum` (1 for
+  // ANY_ONE, len(approvers) for ALL); a mismatch is refused with a typed error
+  // rather than silently corrected, so a caller that sets it is never quietly
+  // given a threshold it did not ask for. Leave it unset and the server derives
+  // it.
+  int32 required_approvals = 8;
+  bool require_distinct_approver = 9;
+  bool require_authenticated_decider = 10;
+
+  // Lifetime from the commit instant. The server computes the deadline, and the
+  // deadline is deliberately NOT accepted as an absolute timestamp: a replaying
+  // caller recomputes "now + an hour" to a different instant on every attempt,
+  // which would change the request's content digest and turn a legitimate retry
+  // into a refusal. Server default applies when 0.
+  int32 ttl_seconds = 11;
+  OnExpire on_expire = 12;
+
+  // Recorded and returned; interpreted by nothing in this version.
+  string notify_run_id = 13;
+  string notify_signal_name = 14;
+
+  // Write the terminal outcome into the named agent's memory as an execution-log
+  // step. Ignored when `agent_id` is empty. Best-effort by construction: a memory
+  // failure never changes what a human decided.
+  bool record_to_memory = 15;
+}
+
+// Response message for the ApprovalService.CreateApproval rpc.
+message CreateApprovalResponse {
+  Approval approval = 1;
+  // True when `request_key` resolved to an approval that already existed. The
+  // call is a success either way; this distinguishes "your retry was absorbed"
+  // from "your request created something", which is the difference between
+  // waiting on an outcome and having just asked for one.
+  bool already_existed = 2;
+}
+
+// Request message for the ApprovalService.GetApproval rpc.
+message GetApprovalRequest {
+  string approval_id = 1; // path parameter
+}
+
+// Response message for the ApprovalService.GetApproval rpc.
+message GetApprovalResponse {
+  Approval approval = 1;
+  // The audit trail, oldest first. Empty while nobody has decided.
+  repeated ApprovalDecision decisions = 2;
+}
+
+// Request message for the ApprovalService.ListApprovals rpc.
+message ListApprovalsRequest {
+  int32 page_size = 1; // max approvals to return; server picks a default when 0
+  string page_token = 2; // next_page_token from a prior response; empty for the first page
+  // Optional status filter. Unset returns every status.
+  ApprovalStatus status = 3;
+  // Optional: only approvals naming this agent. Agents outside the caller's reach
+  // are omitted from every listing whether or not this is set.
+  string agent_id = 4;
+  // Narrow to approvals awaiting the calling human's decision — the console's
+  // approvals inbox. Requires no permission, since it returns only what was
+  // addressed to the caller. Meaningless for a key-authenticated caller, which
+  // can never be an approver.
+  bool only_awaiting_me = 5;
+}
+
+// Response message for the ApprovalService.ListApprovals rpc.
+message ListApprovalsResponse {
+  repeated Approval approvals = 1;
+  string next_page_token = 2; // empty when there are no more pages
+}
+
+// Request message for the ApprovalService.CancelApproval rpc.
+message CancelApprovalRequest {
+  string approval_id = 1; // path parameter
+}
+
+// Response message for the ApprovalService.CancelApproval rpc.
+message CancelApprovalResponse {
+  Approval approval = 1; // as cancelled
+}
+
+// Request message for the ApprovalService.WaitApproval rpc.
+message WaitApprovalRequest {
+  string approval_id = 1; // path parameter
+  // How long to wait. Clamped to the platform maximum, and the server also
+  // respects the request's own deadline. 0 takes the platform maximum.
+  int32 timeout_seconds = 2;
+}
+
+// Response message for the ApprovalService.WaitApproval rpc.
+message WaitApprovalResponse {
+  // The approval's state when the wait returned. A PENDING approval here means
+  // the wait elapsed, NOT that anything failed — call again to keep waiting.
+  Approval approval = 1;
+  // True when the wait returned because the ceiling was reached rather than
+  // because the approval resolved. Redundant with a PENDING status, and stated
+  // anyway so a caller's loop condition cannot be subtly wrong.
+  bool timed_out = 2;
+}
+
+// Request message for the ApprovalService.ResendApprovalNotification rpc.
+message ResendApprovalNotificationRequest {
+  string approval_id = 1; // path parameter
+  // Optional: resend to just this approver. Empty re-arms every approver who has
+  // not yet decided.
+  string approver_id = 2;
+}
+
+// Response message for the ApprovalService.ResendApprovalNotification rpc.
+message ResendApprovalNotificationResponse {
+  // The approvers re-armed, with their delivery state after the inline attempt.
+  repeated Approver approvers = 1;
+}
+
+// Request message for the ApprovalService.DescribeApprovalByToken rpc.
+message DescribeApprovalByTokenRequest {
+  // The capability token from the emailed link, carried in the BODY. It binds to
+  // exactly one approval as exactly one approver and confers nothing else: no
+  // session, no membership, no reach into any other approval, agent, dataset, or
+  // enterprise. Reading with it spends nothing.
+  string token = 1;
+}
+
+// Response message for the ApprovalService.DescribeApprovalByToken rpc.
+//
+// Deliberately NOT an `Approval`. The holder of a mailed token is authorized to
+// see the question put to them, not the enterprise's internal record — so there
+// is no approver roster, no creator identity, and no delivery state here.
+message DescribeApprovalByTokenResponse {
+  string approval_id = 1;
+  // The enterprise asking, for display. An approver deciding on a request from an
+  // organization they do not recognize should be able to see that before they act.
+  string enterprise_name = 2;
+  string title = 3;
+  string summary = 4;
+  google.protobuf.Struct payload = 5;
+  // Which approver this token speaks for, so the page can say who it thinks is
+  // reading.
+  string approver_email = 6;
+
+  ApprovalStatus status = 7;
+  int32 required_approvals = 8;
+  int32 approvals_recorded = 9;
+  google.protobuf.Timestamp expires_at = 10;
+  google.protobuf.Timestamp decided_at = 11; // set once terminal
+
+  // True when this token may still be spent: the approval is PENDING, the
+  // deadline has not passed, and this approver has not decided. False means the
+  // page should explain the outcome rather than offer buttons.
+  bool decidable = 12;
+  // Set when the approval requires an authenticated decider. The link still
+  // renders the request — that is what the approver needs to see — but the
+  // decision must come from a signed-in session, and the page directs them to
+  // sign in rather than offering an action that will be refused.
+  bool require_authenticated_decider = 13;
+
+  // Digest of the content in THIS response. Echo it back as `seen_digest` when
+  // submitting a decision; it is recorded on the audit row as evidence of what
+  // the approver was shown.
+  string rendered_digest = 14;
+}
+
+// Request message for the ApprovalService.SubmitApprovalDecision rpc.
+message SubmitApprovalDecisionRequest {
+  // The capability-token origin. Carried in the BODY, never a path or query
+  // parameter. Leave empty when deciding as an authenticated approver, in which
+  // case `approval_id` identifies the approval instead.
+  string token = 1;
+  // The authenticated-approver origin. Required when `token` is empty, and when
+  // both are given they must agree.
+  string approval_id = 2;
+  DecisionValue decision = 3;
+  string comment = 4; // optional, recorded verbatim on the audit row
+  // The `rendered_digest` from the describe call that showed this approver the
+  // request. Recorded on the audit row so the trail shows what they were shown.
+  string seen_digest = 5;
+}
+
+// Response message for the ApprovalService.SubmitApprovalDecision rpc.
+message SubmitApprovalDecisionResponse {
+  // The approval's status AFTER this decision. Under ALL with approvals still
+  // outstanding this is still PENDING: the decision was recorded and the request
+  // has not resolved.
+  ApprovalStatus status = 1;
+  int32 required_approvals = 2;
+  int32 approvals_recorded = 3;
+  google.protobuf.Timestamp decided_at = 4; // set when this decision made it terminal
+  // The decision as recorded, for the page to confirm back to the human.
+  ApprovalDecision decision = 5;
+}
+
+// Request message for the ApprovalService.ListApprovers rpc.
+message ListApproversRequest {
+  int32 page_size = 1; // max entries to return; server picks a default when 0
+  string page_token = 2; // next_page_token from a prior response; empty for the first page
+}
+
+// Response message for the ApprovalService.ListApprovers rpc.
+//
+// Members are not listed here and need no entry: they are addressable by virtue
+// of membership. This list is only the non-members the enterprise has admitted.
+message ListApproversResponse {
+  repeated ApproverAllowlistEntry entries = 1;
+  string next_page_token = 2; // empty when there are no more pages
+}
+
+// Request message for the ApprovalService.AddApprover rpc.
+message AddApproverRequest {
+  AllowlistKind kind = 1;
+  string value = 2; // an address, or a bare domain for ALLOWLIST_KIND_DOMAIN
+}
+
+// Response message for the ApprovalService.AddApprover rpc.
+message AddApproverResponse {
+  ApproverAllowlistEntry entry = 1;
+}
+
+// Request message for the ApprovalService.RemoveApprover rpc.
+message RemoveApproverRequest {
+  string entry_id = 1; // path parameter
+}
+
+// Response message for the ApprovalService.RemoveApprover rpc.
+message RemoveApproverResponse {}
