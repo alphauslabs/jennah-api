@@ -116,11 +116,14 @@ service ApprovalService {
   // RPC. Authenticated, gated on `approval.requests:create` (a resend sends mail,
   // so it is a create-class act, not a read).
   //
-  // Reuses the approver's EXISTING token rather than minting a new one: a resend
-  // must never invalidate a message already in flight, since the first copy may
-  // be in a mailbox the approver is about to open. Both copies therefore work,
-  // and the first one used spends the token for both. Resends count against the
-  // enterprise's notification ceiling.
+  // Mints an ADDITIONAL token rather than re-rendering the approver's existing
+  // one, which is impossible by design: tokens are stored only as a hash, so no
+  // node can recover a value it did not mint. A resend therefore invalidates
+  // nothing — the copy already in the approver's mailbox keeps working. Single
+  // use is a property of the APPROVER, not of a token: whichever copy they act on
+  // first records their one decision, and every other token outstanding for them
+  // is then refused as already-decided. Resends count against the enterprise's
+  // notification ceiling.
   rpc ResendApprovalNotification(ResendApprovalNotificationRequest) returns (ResendApprovalNotificationResponse) {
     option (google.api.http) = {
       post: "/v1/approvals/{approval_id}:resend"
@@ -380,8 +383,9 @@ message Approval {
   // When set, the user who created this approval may not decide it, even if they
   // are a listed approver (four-eyes).
   bool require_distinct_approver = 11;
-  // When set, the emailed capability link will not be accepted as authority: only
-  // an authenticated listed approver may decide. Creatable only where every
+  // When set, no capability token is minted for any approver and the notification
+  // carries no one-click link at all — it directs the approver to sign in, and
+  // only an authenticated listed approver may decide. Creatable only where every
   // approver is a member, since a non-member has no account to sign in with.
   bool require_authenticated_decider = 12;
 
@@ -617,10 +621,11 @@ message DescribeApprovalByTokenResponse {
   // deadline has not passed, and this approver has not decided. False means the
   // page should explain the outcome rather than offer buttons.
   bool decidable = 12;
-  // Set when the approval requires an authenticated decider. The link still
-  // renders the request — that is what the approver needs to see — but the
-  // decision must come from a signed-in session, and the page directs them to
-  // sign in rather than offering an action that will be refused.
+  // Set when the approval requires an authenticated decider. False in practice:
+  // such an approval mints no token, so there is no link that reaches this
+  // response at all. It is reported anyway as a fail-safe — a client that somehow
+  // arrives here sees `decidable` false and must direct the approver to sign in
+  // rather than offer an action that would be refused.
   bool require_authenticated_decider = 13;
 
   // Digest of the content in THIS response. Echo it back as `seen_digest` when
