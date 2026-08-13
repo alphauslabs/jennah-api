@@ -19,10 +19,7 @@ service AgentService {
   //
   // Returns the workspace synchronously. When provisioning is still in flight
   // the returned AgentInstance carries status AGENT_STATUS_PROVISIONING; poll
-  // GetAgent until it reaches AGENT_STATUS_ACTIVE. (The first implementation
-  // provisions inline and returns ACTIVE directly; the PROVISIONING status is
-  // the forward-compatible signal for when region/instance creation, which can
-  // take minutes, is made asynchronous.)
+  // GetAgent until it reaches AGENT_STATUS_ACTIVE.
   rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse) {
     option (google.api.http) = {
       post: "/v1/agents"
@@ -96,10 +93,6 @@ message CreateAgentRequest {
   // offers for agents (see PlatformService.ListLocations, whose entries carry an
   // `agents` block where they do), and when empty the default agent location is
   // used.
-  //
-  // The field is named `region` for historical reasons: it predates the platform
-  // having any placement other than an agent's. A location is not required to be
-  // a single cloud region, so the NAME is narrower than the values it accepts.
   string region = 3;
 }
 

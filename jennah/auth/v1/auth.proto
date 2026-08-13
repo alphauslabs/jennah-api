@@ -176,12 +176,8 @@ service AuthService {
   // Transfers the caller's active enterprise's ROLE_ROOT to another member of
   // that enterprise: the target becomes ROLE_ROOT and the caller becomes
   // ROLE_ADMIN, atomically. External (gateway) RPC. Authenticated AND authorized
-  // by identity: ONLY the enterprise's current ROLE_ROOT may call it. Holding
-  // every permission is not sufficient: a ROLE_ADMIN (whose permission set is
-  // identical to ROLE_ROOT's) is refused, and so is an API-key caller. This is
-  // the only authority ROLE_ROOT holds that ROLE_ADMIN does not, and the only way
-  // ROLE_ROOT ever moves: it remains non-grantable by ChangeMemberRole and by
-  // invitation. The target must already be a live member (a user_id, never an
+  // by identity: ONLY the enterprise's current ROLE_ROOT may call it.
+  // The target must already be a live member (a user_id, never an
   // email); no membership is created and no pending offer is minted. Takes effect
   // without re-minting a token, because roles are resolved live server-side.
   rpc TransferRoot(TransferRootRequest) returns (TransferRootResponse) {
@@ -821,11 +817,7 @@ message AgentSelectorList {
 // counterpart to AgentSelectorList and used for the same reason.
 //
 // It is a separate message rather than a reuse of AgentSelectorList because the
-// two are set independently (an update may replace one namespace's selectors
-// and leave the other's untouched), and a shared type would make "unset" mean
-// "leave both alone", collapsing that distinction. A shared, namespace-neutral
-// type would have been cleaner from the start, but renaming AgentSelectorList
-// now would break every generated client for no behavioral gain.
+// two are set independently.
 message DatasetSelectorList {
   repeated string selectors = 1; // may be empty, meaning "no dataset access"
 }

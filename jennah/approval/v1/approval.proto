@@ -9,23 +9,6 @@ import "google/protobuf/timestamp.proto";
 option go_package = "github.com/alphauslabs/jennah-api/approval";
 
 // ApprovalService puts a decision to a named human and records the answer.
-//
-// The shape of the feature in one paragraph: an agent (usually a key-authenticated
-// service principal) creates an approval naming one or more approvers; each
-// approver is emailed a single-use capability token; the approver's browser reads
-// the request read-only and then submits an explicit decision; the first decision
-// that satisfies the quorum — or any rejection — moves the approval to a terminal
-// status that never changes again. An approval that reaches its deadline undecided
-// fails closed. Jennah RECORDS the decision; it does not enforce it. Nothing here
-// stops an agent that ignores a rejection — the enforcement point is the caller's
-// own code.
-//
-// Two methods (DescribeApprovalByToken, SubmitApprovalDecision) are unauthenticated
-// in the bearer-token sense: their caller is a human holding an emailed token who
-// may have no jennah account at all. Exemption from bearer-token auth is not
-// exemption from authentication — they authenticate their caller by validating the
-// presented token, exactly as the marketplace registration method authenticates by
-// exchanging a provider token.
 service ApprovalService {
   // Creates an approval request under the caller's enterprise and attempts to
   // notify its approvers. External (gateway) RPC. Authenticated, and gated on
@@ -44,7 +27,7 @@ service ApprovalService {
   // content is ALREADY_EXISTS rather than a silent hand-back of the first
   // question's receipt.
   //
-  // Refused in full — no approval row, no mail to anyone in the request — when
+  // Refused in full (no approval row and no mail sent) when
   // any listed approver is unaddressable (see AddApprover for what makes an
   // address reachable), when `require_authenticated_decider` is set alongside a
   // non-member approver, when the approvers eligible to decide are fewer than
@@ -58,7 +41,7 @@ service ApprovalService {
 
   // Reads one approval with its approvers, their delivery state, and its recorded
   // decisions. External (gateway) RPC. Authenticated. Readable by a holder of
-  // `approval.requests:read`, and — with no permission at all — by a listed
+  // `approval.requests:read`, and (with no permission at all) by a listed
   // approver reading what was addressed to them.
   //
   // Expiry is applied at READ: an approval past its deadline is reported terminal
@@ -85,9 +68,7 @@ service ApprovalService {
   // every outstanding capability token unspendable. External (gateway) RPC.
   // Authenticated, gated on `approval.requests:cancel`.
   //
-  // Cancelling an already-terminal approval is FAILED_PRECONDITION, not a silent
-  // success: the caller asked to stop something that had already happened, and
-  // needs to know which.
+  // Cancelling an already-terminal approval is FAILED_PRECONDITION.
   rpc CancelApproval(CancelApprovalRequest) returns (CancelApprovalResponse) {
     option (google.api.http) = {
       post: "/v1/approvals/{approval_id}:cancel"
@@ -100,11 +81,8 @@ service ApprovalService {
   // authority as GetApproval.
   //
   // A bounded server-side poll, not a stream: the effective wait is clamped to a
-  // platform maximum well under the load balancer's idle timeout, and reaching
-  // that maximum returns the still-PENDING approval AS A SUCCESS. A caller that
-  // treats a pending return as an error will thrash; the correct loop is to call
-  // again. Safe to call repeatedly, and it holds no resource a caller must
-  // release.
+  // platform maximum, and reaching that maximum returns the still-PENDING approval.
+  // Safe to call repeatedly, and it holds no resource a caller must release.
   rpc WaitApproval(WaitApprovalRequest) returns (WaitApprovalResponse) {
     option (google.api.http) = {
       post: "/v1/approvals/{approval_id}:wait"
@@ -117,9 +95,8 @@ service ApprovalService {
   // so it is a create-class act, not a read).
   //
   // Mints an ADDITIONAL token rather than re-rendering the approver's existing
-  // one, which is impossible by design: tokens are stored only as a hash, so no
-  // node can recover a value it did not mint. A resend therefore invalidates
-  // nothing — the copy already in the approver's mailbox keeps working. Single
+  // one. A resend therefore invalidates
+  // nothing: the copy already in the approver's mailbox keeps working. Single
   // use is a property of the APPROVER, not of a token: whichever copy they act on
   // first records their one decision, and every other token outstanding for them
   // is then refused as already-decided. Resends count against the enterprise's
@@ -138,15 +115,12 @@ service ApprovalService {
   // unauthenticated allowlist; it authenticates its caller by resolving the
   // presented token to a live approver record, and refuses when it cannot.
   //
-  // STRICTLY READ-ONLY, and that is a security requirement rather than a
-  // nicety: mail scanners, corporate link-rewriting proxies, and client
-  // prefetchers fetch every URL in a message, so nothing reachable by a fetch may
-  // record a decision or spend a token. Calling this repeatedly is safe and
-  // changes nothing.
+  // Read-only: nothing reachable by a fetch may record a decision or spend a token.
+  // Calling this repeatedly is safe and changes nothing.
   //
   // The token is taken in the BODY. It appears in no path and no query string
   // anywhere in this service, because the emailed link carries it in the URL
-  // FRAGMENT — which browsers do not send to servers — so it reaches the
+  // FRAGMENT (which browsers do not send to servers) so it reaches the
   // approver's browser and neither the console's access log, a referrer header, a
   // link-rewriting proxy's telemetry, nor jennah's own logs.
   //
@@ -162,7 +136,7 @@ service ApprovalService {
 
   // Records a decision, once. External (gateway) RPC. On the unauthenticated
   // allowlist for the token origin, and dynamically authorized in the handler for
-  // both origins — the permission catalog deliberately has NO decide action,
+  // both origins: the permission catalog deliberately has NO decide action,
   // because authority to decide is capability-based (holding the emailed token,
   // or being a listed approver) rather than something a role can grant.
   //
@@ -175,8 +149,7 @@ service ApprovalService {
   // human who is not a listed approver is refused too, enterprise admin or not.
   //
   // This is the explicit submission the read-only render is deliberately split
-  // from: it carries the decision value, and no fetch of any emailed URL reaches
-  // it. Terminal is terminal — a second submission, including one matching the
+  // from: it carries the decision value. Terminal is terminal: a second submission, including one matching the
   // recorded outcome, is refused as already-decided rather than recorded twice.
   rpc SubmitApprovalDecision(SubmitApprovalDecisionRequest) returns (SubmitApprovalDecisionResponse) {
     option (google.api.http) = {
@@ -196,7 +169,7 @@ service ApprovalService {
   // Adds an email address or a domain to the enterprise's approver allowlist.
   // External (gateway) RPC. Authenticated, gated on `approval.approvers:manage`,
   // which is management-class and therefore can never appear in an API key's
-  // scope — a key-authenticated caller is refused outright.
+  // scope: a key-authenticated caller is refused outright.
   //
   // Members of the enterprise are ALWAYS addressable and need no entry here. The
   // allowlist exists only for non-members, and the refusal of key-authenticated
@@ -226,7 +199,7 @@ service ApprovalService {
 // A client MUST NOT infer a rule by exclusion. "Not ANY_ONE" does not mean ALL,
 // today or ever: a rule added in a later version arrives at an older client as
 // QUORUM_UNSPECIFIED, and treating that as any known rule would report an outcome
-// nobody authorized. The server holds itself to the same rule — an unrecognized
+// nobody authorized. The server holds itself to the same rule: an unrecognized
 // STORED rule is unresolvable rather than resolved under a default.
 enum Quorum {
   // Unknown to this client's proto version. Not a default and not a synonym for
@@ -255,10 +228,7 @@ enum ApprovalStatus {
 
 // What an undecided approval becomes at its deadline.
 //
-// Note what is NOT here: there is no value that approves an undecided request.
-// That absence is the contract — no configuration, tier, entitlement, or request
-// field can auto-approve on timeout, because the alternative is approving things
-// nobody saw.
+// No value automatically approves an undecided request on timeout.
 enum OnExpire {
   // Treated as ON_EXPIRE_DENY.
   ON_EXPIRE_UNSPECIFIED = 0;
@@ -266,13 +236,13 @@ enum OnExpire {
   // right choice when a downstream caller branches on approved-vs-not.
   ON_EXPIRE_DENY = 1;
   // Resolve as EXPIRED: nobody answered, and the caller wants that distinguishable
-  // from a human's refusal. Still fails closed — EXPIRED is not APPROVED.
+  // from a human's refusal. Still fails closed: EXPIRED is not APPROVED.
   ON_EXPIRE_EXPIRE = 2;
 }
 
 // Where an approver's notification is in its delivery lifecycle. This exists so
 // that "the human has not responded" is distinguishable from "the human was never
-// reached" — an approver stranded by a bad address is a different operational
+// reached": an approver stranded by a bad address is a different operational
 // problem from one who is simply thinking about it.
 enum DeliveryState {
   DELIVERY_STATE_UNSPECIFIED = 0;
@@ -317,7 +287,7 @@ enum AllowlistKind {
 // One human an approval was put to, with the delivery state of their notification.
 //
 // The capability token is NEVER carried here or anywhere else in a response: it is
-// stored only as a hash, and it reaches exactly one place — the emailed link.
+// stored only as a hash, and it reaches exactly one place: the emailed link.
 message Approver {
   // Stable id within the approval; the handle for a targeted resend and the
   // identity recorded on an external approver's audit row.
@@ -374,7 +344,7 @@ message Approval {
   Quorum quorum = 8;
   // How many approvals resolve this request: 1 for ANY_ONE, the approver count
   // for ALL. Assigned at creation and immutable thereafter. This column, not the
-  // rule name, is the sole authority on the threshold — resolution is a count
+  // rule name, is the sole authority on the threshold: resolution is a count
   // comparison, which is why it stays correct for a rule this client predates.
   int32 required_approvals = 9;
   // Approvals recorded so far, so a partially-approved request is legible rather
@@ -384,7 +354,7 @@ message Approval {
   // are a listed approver (four-eyes).
   bool require_distinct_approver = 11;
   // When set, no capability token is minted for any approver and the notification
-  // carries no one-click link at all — it directs the approver to sign in, and
+  // carries no one-click link at all: it directs the approver to sign in, and
   // only an authenticated listed approver may decide. Creatable only where every
   // approver is a member, since a non-member has no account to sign in with.
   bool require_authenticated_decider = 12;
@@ -399,13 +369,13 @@ message Approval {
   string created_by_key_id = 16; // empty when created by a signed-in human
   google.protobuf.Timestamp created_at = 17; // server-assigned commit timestamp
   // The deadline. Reaching it undecided is terminal per `on_expire`, and that is
-  // evaluated at READ — a read after this instant never reports PENDING, whether
+  // evaluated at READ: a read after this instant never reports PENDING, whether
   // or not a background pass has run.
   google.protobuf.Timestamp expires_at = 18;
   OnExpire on_expire = 19;
 
   // Recorded at creation, returned unchanged, and INTERPRETED BY NOTHING in this
-  // version. They exist so a later durable-execution capability can deliver a
+  // version. They exist so a later execution capability can deliver a
   // decision as a run signal without a change to stored state.
   string notify_run_id = 20;
   string notify_signal_name = 21;
@@ -432,7 +402,7 @@ message ApprovalDecision {
   // is the approver record's email plus `approver_id`.
   string actor_user_id = 6;
   // True when the decision arrived over a capability token rather than an
-  // authenticated session — the difference between "someone with access to that
+  // authenticated session: the difference between "someone with access to that
   // mailbox" and "that person, signed in".
   bool via_token = 7;
   string source_ip = 8;
@@ -502,9 +472,7 @@ message CreateApprovalRequest {
 message CreateApprovalResponse {
   Approval approval = 1;
   // True when `request_key` resolved to an approval that already existed. The
-  // call is a success either way; this distinguishes "your retry was absorbed"
-  // from "your request created something", which is the difference between
-  // waiting on an outcome and having just asked for one.
+  // call is a success either way.
   bool already_existed = 2;
 }
 
@@ -529,8 +497,8 @@ message ListApprovalsRequest {
   // Optional: only approvals naming this agent. Agents outside the caller's reach
   // are omitted from every listing whether or not this is set.
   string agent_id = 4;
-  // Narrow to approvals awaiting the calling human's decision — the console's
-  // approvals inbox. Requires no permission, since it returns only what was
+  // Narrow to approvals awaiting the calling human's decision (the console's
+  // approvals inbox). Requires no permission, since it returns only what was
   // addressed to the caller. Meaningless for a key-authenticated caller, which
   // can never be an approver.
   bool only_awaiting_me = 5;
@@ -563,7 +531,7 @@ message WaitApprovalRequest {
 // Response message for the ApprovalService.WaitApproval rpc.
 message WaitApprovalResponse {
   // The approval's state when the wait returned. A PENDING approval here means
-  // the wait elapsed, NOT that anything failed — call again to keep waiting.
+  // the wait elapsed, NOT that anything failed: call again to keep waiting.
   Approval approval = 1;
   // True when the wait returned because the ceiling was reached rather than
   // because the approval resolved. Redundant with a PENDING status, and stated
@@ -597,7 +565,7 @@ message DescribeApprovalByTokenRequest {
 // Response message for the ApprovalService.DescribeApprovalByToken rpc.
 //
 // Deliberately NOT an `Approval`. The holder of a mailed token is authorized to
-// see the question put to them, not the enterprise's internal record — so there
+// see the question put to them, not the enterprise's internal record, so there
 // is no approver roster, no creator identity, and no delivery state here.
 message DescribeApprovalByTokenResponse {
   string approval_id = 1;
@@ -622,8 +590,6 @@ message DescribeApprovalByTokenResponse {
   // page should explain the outcome rather than offer buttons.
   bool decidable = 12;
   // Set when the approval requires an authenticated decider. False in practice:
-  // such an approval mints no token, so there is no link that reaches this
-  // response at all. It is reported anyway as a fail-safe — a client that somehow
   // arrives here sees `decidable` false and must direct the approver to sign in
   // rather than offer an action that would be refused.
   bool require_authenticated_decider = 13;

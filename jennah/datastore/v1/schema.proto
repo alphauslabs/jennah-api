@@ -162,21 +162,8 @@ message TableDeclaration {
 
   repeated IndexDeclaration indexes = 4;
 
-  // There is deliberately NO per-row authorization field here, no owner column
-  // and no policy predicate.
-  //
-  // A per-row owner predicate is meaningful only when the END USER is a
-  // principal, as it is in systems that mint a credential per application user.
-  // Jennah principals are enterprise members (invite-based, seat-counted) and API
-  // keys; an end user of a tenant's application is neither. A tenant's app calls
-  // with ONE key, so `owner = caller` would resolve to the same principal for
-  // every row and distinguish nothing.
-  //
   // The dataset is the unit of isolation: every principal that reaches a dataset
-  // reaches all of its rows. A per-row layer needs an END-USER IDENTITY that is
-  // not a Jennah principal (a subject supplied by the tenant's own auth, carried
-  // on the request and bound into the clamp), which is a larger design than a
-  // policy language and is not part of this surface.
+  // reaches all of its rows.
 }
 
 // Request message for the SchemaService.DeclareTables rpc.
