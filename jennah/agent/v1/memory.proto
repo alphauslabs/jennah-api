@@ -71,6 +71,29 @@ service MemoryService {
       body: "*"
     };
   }
+
+  // Replaces a currently-held semantic passage WITHOUT destroying it
+  // (add-temporal-vectors). The vector counterpart of SupersedeEdge, with the same
+  // semantics on the same terms: in one read-write transaction it closes the prior
+  // chunk's valid-time window (its invalid_at becomes the new chunk's valid_at, its
+  // transaction-time start preserved) and inserts the replacement chunk in the same
+  // (EnterpriseId, AgentInstanceId) slice with a fresh transaction-time start and an
+  // open window. The prior chunk keeps its content and stays readable as history via
+  // an as_of_valid semantic query. Supersession is caller-driven: the platform never
+  // infers which passages conflict, and performs no model-driven detection of it.
+  // new_chunk.valid_at (the supersession boundary) is REQUIRED and new_chunk.chunk_id
+  // must differ from prior_chunk_id; an unknown prior chunk is NotFound and a reused
+  // new chunk_id is AlreadyExists.
+  //
+  // The superseded chunk stops being returned by ordinary semantic search from this
+  // point on, which is the operation's purpose: a retired passage that stayed
+  // rankable would go on occupying the limited slots a caller injects into a prompt.
+  rpc SupersedeChunk(SupersedeChunkRequest) returns (SupersedeChunkResponse) {
+    option (google.api.http) = {
+      post: "/v1/agents/{agent_instance_id}/vectors/chunks:supersede"
+      body: "*"
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +163,24 @@ message VectorChunk {
   // Keys must match `[A-Za-z0-9_.-]{1,128}`; a key outside that set is rejected
   // with INVALID_ARGUMENT. At most 32 keys per chunk.
   map<string, string> metadata = 4;
+
+  // Bi-temporal valid-time window (add-temporal-vectors), both optional on write
+  // and carrying exactly the meaning GraphEdge.valid_at/invalid_at carry, so one
+  // temporal model covers passages and relationships alike. valid_at is when the
+  // passage's content held in the world; when unset the chunk is an always-current
+  // passage. invalid_at is when it ceased to hold; unset means it still holds.
+  // Transaction-time (asserted/expired) is server-assigned and not expressible
+  // here.
+  //
+  // Setting these on a plain commit is NOT supersession. A re-upsert of an existing
+  // chunk_id replaces that row's content and is how a caller CORRECTS a chunk;
+  // replacing a fact while preserving history is MemoryService.SupersedeChunk. The
+  // platform never infers one from the other.
+  //
+  // Read back via InspectMemory, which reports a chunk's whole validity on
+  // VectorChunkInfo including the server-assigned transaction-time pair.
+  google.protobuf.Timestamp valid_at = 5;
+  google.protobuf.Timestamp invalid_at = 6;
 }
 
 // Graph-memory writes for one commit. Edges may only connect nodes within the
@@ -290,6 +331,33 @@ message SemanticQuery {
   // filters; it is NOT the silent truncation the tenant/agent clamp guarantees
   // against.
   repeated MetadataFilter filters = 4;
+
+  // Bi-temporal time-travel over chunk validity (add-temporal-vectors), named and
+  // behaving IDENTICALLY to GraphQuery.as_of_valid/as_of_tx so one temporal model
+  // serves the whole memory surface. Absent as_of_valid means the default filter:
+  // only currently-held chunks. A set as_of_valid switches to valid-time interval
+  // containment (chunks whose valid-time window contains that instant), so the
+  // search reconstructs the passages believed current at that point in time,
+  // including ones since superseded. A set as_of_tx additionally constrains
+  // transaction-time ("as known at as_of_tx"), and is only meaningful together with
+  // as_of_valid.
+  //
+  // A chunk written before this capability existed has no valid-time and is treated
+  // as valid for all time, so it is returned by any as_of_valid instant rather than
+  // vanishing from history it predates.
+  //
+  // Supplying the same as_of_valid to this section and to the graph section
+  // reconstructs a CROSS-MODAL past belief: the passages and the relationships the
+  // agent held at that instant, consistent with one another.
+  //
+  // This is NOT QueryMemoryRequest.as_of. That field moves the physical read
+  // snapshot and is bounded by the backend's version-retention window (about an
+  // hour); valid-time is a bound predicate over stored columns evaluated at the
+  // current snapshot, so it reaches arbitrarily far back. Both bounds bind as query
+  // parameters and are injected alongside the tenant/agent clamp, which cannot be
+  // omitted or widened.
+  google.protobuf.Timestamp as_of_valid = 5;
+  google.protobuf.Timestamp as_of_tx = 6;
 }
 
 // One predicate over a chunk's metadata.
@@ -569,6 +637,33 @@ message VectorChunkInfo {
 
   // The chunk's stored metadata. Empty when the chunk has none.
   map<string, string> metadata = 6;
+
+  // Output-only bi-temporal validity (add-temporal-vectors). Inspect lists what a
+  // workspace HOLDS, and a superseded passage is still held, so the listing keeps
+  // returning it and reports its validity here instead. Semantic search is the
+  // surface that shows what is CURRENT; the two answer different questions on
+  // purpose, and a caller that wants only live passages should search rather than
+  // filter this listing.
+  //
+  // valid_at / invalid_at are the valid-time window: when the passage's content
+  // held in the world. asserted_at / expired_at are the transaction-time window:
+  // when the platform asserted it. A chunk with both ENDS absent (invalid_at and
+  // expired_at) is currently held.
+  //
+  // ABSENCE IS MEANINGFUL and differs per field. An absent invalid_at or expired_at
+  // means the window is still open. An absent valid_at means the passage is valid
+  // for all time, which is what every chunk written before this capability existed
+  // is, so a reader MUST NOT treat it as a missing value to be defaulted. An absent
+  // asserted_at means the same thing one level over: the chunk predates the
+  // assertion-start column and the platform cannot say when it was first asserted.
+  //
+  // asserted_at is ASSIGN-ONCE, and it is the field that answers "when was this
+  // first written". `updated_at` above cannot: chunks are upserted, so it moves
+  // every time a caller corrects one.
+  google.protobuf.Timestamp valid_at = 7;
+  google.protobuf.Timestamp invalid_at = 8;
+  google.protobuf.Timestamp asserted_at = 9;
+  google.protobuf.Timestamp expired_at = 10;
 }
 
 // Graph listing result: the stored nodes and edges themselves (reusing the same
@@ -604,4 +699,36 @@ message SupersedeEdgeRequest {
 // the prior edge and inserted the replacement.
 message SupersedeEdgeResponse {
   google.protobuf.Timestamp commit_timestamp = 1;
+}
+
+// Request for MemoryService.SupersedeChunk.
+message SupersedeChunkRequest {
+  string agent_instance_id = 1; // route path parameter; never read from the body
+
+  // The currently-held chunk to close. Resolved within the caller's slice; an
+  // unknown id is NotFound (never a cross-slice touch). Its content is left
+  // intact: closing a window writes the validity end and nothing else, so the
+  // superseded passage stays readable as history.
+  string prior_chunk_id = 2;
+
+  // The replacement passage, inserted in the same slice. new_chunk.valid_at is
+  // REQUIRED: it is the supersession boundary (the prior chunk's invalid_at and the
+  // new chunk's valid_at) and must be a concrete timestamp. new_chunk.chunk_id must
+  // be set and differ from prior_chunk_id (the replacement is inserted, not
+  // upserted, so a reused id is rejected). It carries the same content, embedding,
+  // and metadata fields a committed chunk does, including server-side embedding
+  // generation when `embedding` is empty.
+  VectorChunk new_chunk = 3;
+}
+
+// The supersession receipt: the commit timestamp of the transaction that closed
+// the prior chunk and inserted the replacement.
+message SupersedeChunkResponse {
+  google.protobuf.Timestamp commit_timestamp = 1;
+
+  // Set when the replacement's embedding was generated server-side and the model
+  // truncated it, mirroring CommitMemoryResponse.truncated_chunk_ids for the single
+  // chunk this operation writes. The supersession SUCCEEDED; the tail of the
+  // replacement's raw_content is not represented in its stored vector.
+  bool truncated = 2;
 }
