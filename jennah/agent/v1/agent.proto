@@ -44,9 +44,9 @@ service AgentService {
 
   // Deletes an agent workspace the caller owns with a single tenant-scoped
   // delete that cascades to all of the agent's memory (execution logs, vectors,
-  // graph). Returns an erasure receipt: the commit timestamp and the per-memory-
-  // type row counts removed. An agent_instance_id not owned by the caller's
-  // enterprise is treated as not found.
+  // graph). Returns a receipt carrying the instant the erasure committed. An
+  // agent_instance_id not owned by the caller's enterprise is treated as not
+  // found.
   rpc DeleteAgent(DeleteAgentRequest) returns (DeleteAgentResponse) {
     option (google.api.http) = {delete: "/v1/agents/{agent_instance_id}"};
   }
@@ -130,12 +130,13 @@ message DeleteAgentRequest {
 
 // Response message for the AgentService.DeleteAgent rpc.
 //
-// The erasure receipt: a commit timestamp plus how many rows were removed per
-// memory type, so a caller can evidence a complete, atomic erasure.
+// The deletion receipt: the instant the erasure committed. It deliberately does
+// NOT enumerate what was removed. The cascade prunes every table interleaved
+// under AgentInstances, including ones added after this message was written, so
+// an enumeration would have to be widened by every change that adds a table and
+// would report an internal row shape the caller cannot verify against anything.
+// What the receipt attests to is that the workspace and everything beneath it
+// were erased in one transaction, at one instant.
 message DeleteAgentResponse {
   google.protobuf.Timestamp deleted_at = 1; // cascade-delete commit timestamp
-  int64 execution_log_rows = 2;
-  int64 vector_rows = 3;
-  int64 graph_node_rows = 4;
-  int64 graph_edge_rows = 5;
 }

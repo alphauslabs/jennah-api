@@ -47,9 +47,9 @@ service DatasetService {
 
   // Deletes a dataset the caller owns: drops its declared tables and removes its
   // catalog and directory records, cascading to all of its application rows.
-  // Returns an erasure receipt (the commit timestamp and per-table row counts),
-  // so a caller can evidence a complete erasure. A dataset_id not owned by the
-  // caller's enterprise is treated as not found.
+  // Every table the dataset holds is dropped, whatever their number. Returns a
+  // receipt carrying the instant the teardown committed. A dataset_id not owned
+  // by the caller's enterprise is treated as not found.
   rpc DeleteDataset(DeleteDatasetRequest) returns (DeleteDatasetResponse) {
     option (google.api.http) = {delete: "/v1/datasets/{dataset_id}"};
   }
@@ -194,12 +194,11 @@ message DeleteDatasetRequest {
 
 // Response message for the DatasetService.DeleteDataset rpc.
 //
-// The erasure receipt: a commit timestamp plus how many rows were removed from
-// each of the dataset's tables, so a caller can evidence a complete erasure.
+// The deletion receipt: the instant the teardown committed. It deliberately
+// does NOT enumerate what was dropped, matching DeleteAgentResponse: the
+// platform does not make an itemised erasure claim on either plane. A caller
+// that needs to know what a dataset held reads its table catalog before
+// deleting it, which the schema surface already serves.
 message DeleteDatasetResponse {
   google.protobuf.Timestamp deleted_at = 1; // teardown commit timestamp
-  int64 tables_dropped = 2;
-  // Rows removed per logical table name. A table that held no rows is present
-  // with a count of zero, so the map also enumerates what was dropped.
-  map<string, int64> rows_deleted_by_table = 3;
 }
