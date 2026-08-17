@@ -880,11 +880,39 @@ message GetRoleResponse {
   CustomRole role = 1;
 }
 
-// Request message for the AuthService.UpdateRole rpc. Replaces the role's name
-// and permission set (full replacement, not a merge).
+// Request message for the AuthService.UpdateRole rpc.
+//
+// EVERY FIELD IS OPTIONAL, AND AN OMITTED ONE LEAVES THAT PART OF THE ROLE ALONE.
+// Two idioms express that, because a repeated field and a wrapper message do not
+// signal absence the same way:
+//
+//   name, permissions   empty means unchanged
+//   *_selectors         absent means unchanged, present replaces, present+empty clears
+//
+// Emptying is therefore explicit on both halves: `clear_permissions` for the
+// grants, a present-and-empty list for either selector namespace. A blank name is
+// not storable at all, which is why `name` needs no such flag.
+//
+// This was not always so. `name` and `permissions` were once written
+// unconditionally, so a request carrying only a new name emptied the permission
+// set of a role its holders were relying on, and answered OK.
 message UpdateRoleRequest {
   string role_id = 1; // path parameter; must belong to the caller's active enterprise
-  string name = 2; // unique within the enterprise; must not shadow a built-in role
+  // Optional new name; unique within the enterprise, and must not shadow a
+  // built-in role. EMPTY MEANS UNCHANGED.
+  //
+  // No presence marker is needed here, unlike `permissions` below, because a
+  // blank name is not a value this rpc will store: empty or whitespace-only is
+  // InvalidArgument on this rpc and on CreateRole. With "set it to empty" ruled
+  // out, an empty string has exactly one possible meaning left.
+  string name = 2;
+  // Optional replacement for the role's permission set: explicit
+  // "group.resource:action" grants, no wildcards.
+  //
+  // EMPTY MEANS UNCHANGED, not "revoke everything". A repeated field carries no
+  // presence, so an empty list is indistinguishable from an absent one, and the
+  // safe reading is the one that cannot silently strip a live grant. To empty the
+  // set, send `clear_permissions`.
   repeated string permissions = 3; // explicit "group.resource:action" grants (no wildcards)
   // Optional replacement for the role's agent selectors. UNSET leaves the stored
   // selectors untouched (so a client that only renames a role, or one unaware of
@@ -899,6 +927,14 @@ message UpdateRoleRequest {
   // and vice versa. Changing the stored set requires datastore.access:manage in
   // addition to iam.roles:manage.
   DatasetSelectorList dataset_selectors = 5;
+  // Empties the role's permission set. This is the only way to do it: an empty
+  // `permissions` list means unchanged, so revoking every grant a role confers is
+  // something a caller has to say rather than something they can do by omission.
+  //
+  // Sending this together with a non-empty `permissions` is InvalidArgument. The
+  // two disagree, and whichever one were given precedence, half the callers who
+  // wrote that request meant the other.
+  bool clear_permissions = 6;
 }
 
 // Response message for the AuthService.UpdateRole rpc.
