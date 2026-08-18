@@ -1,0 +1,176 @@
+syntax = "proto3";
+
+package jennahapi.agent.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+import "jennah/agent/v1/agent.proto";
+
+option go_package = "github.com/alphauslabs/jennah-api/agent";
+
+// DESIGN NOTES, deliberately detached from the service below by a blank line so
+// they stay in the source without becoming the service's rendered description.
+//
+// A memory scope is the platform's addressable unit of memory. An agent
+// workspace is one KIND of scope. A subject scope is the other: a durable
+// principal, typically an end user, whose memory outlives any single agent and
+// can be recalled by every agent authorized to reach it. Both kinds live in one
+// table, one identifier space per enterprise, one property graph and one tenancy
+// clamp; the kind is what selects which selector namespace authorizes access.
+//
+// AgentService is retained unchanged as the AGENT-KIND VIEW of this surface: it
+// creates, resolves, lists and destroys only agent-kind scopes, so a subject
+// scope is reported as not found through it and no existing caller's results
+// change because subject scopes came into existence.
+//
+// This is a separate service rather than more RPCs on AgentService because the
+// service name is part of the public surface for a gRPC caller, and a method
+// named CreateScope on a service named AgentService misdescribes what it does.
+// It is the same reason CreateAgent takes no kind field: an endpoint named
+// `agents` that creates a subject would be a lie in the API surface, and it
+// would make the agent listing's contents depend on a request field.
+//
+// The MEMORY operations on a scope are not here. They stay on MemoryService,
+// reached at `/v1/scopes/{scope_id}/memory:*` as a second binding on the very
+// same RPCs, so this service is lifecycle only.
+
+// ScopeService is the lifecycle control plane for an enterprise's memory scopes.
+service ScopeService {
+  // Creates a memory scope of an explicit kind under the caller's enterprise.
+  // The home region is resolved exactly as it is for an agent workspace, from
+  // the optional `region` field or the platform default, and is FIXED for the
+  // scope's life: a subject scope's memory lives in that region's data-plane
+  // database and is never replicated elsewhere, which is what makes a residency
+  // commitment about a subject hold irrespective of which agent reads it.
+  //
+  // The identifier space is shared across both kinds, so an id that already
+  // names a scope of EITHER kind is refused as ALREADY_EXISTS. The kind is fixed
+  // at creation and cannot be changed afterwards, because kind determines which
+  // selector namespace governs the scope and a mutable kind would let a scope
+  // migrate between authorization regimes.
+  rpc CreateScope(CreateScopeRequest) returns (CreateScopeResponse) {
+    option (google.api.http) = {
+      post: "/v1/scopes"
+      body: "*"
+    };
+  }
+
+  // Reads a single scope of either kind. A scope_id not owned by the caller's
+  // enterprise is treated as not found.
+  rpc GetScope(GetScopeRequest) returns (GetScopeResponse) {
+    option (google.api.http) = {get: "/v1/scopes/{scope_id}"};
+  }
+
+  // Lists the caller enterprise's scopes with page_size/page_token pagination,
+  // optionally filtered to one kind. Every entry reports its kind, so a client
+  // never has to infer it from the identifier.
+  rpc ListScopes(ListScopesRequest) returns (ListScopesResponse) {
+    option (google.api.http) = {get: "/v1/scopes"};
+  }
+
+  // Destroys a scope of either kind with a single tenant-scoped delete that
+  // cascades to all of the memory it holds, returning the instant the erasure
+  // committed.
+  //
+  // For a subject scope this is the unit of SUBJECT ERASURE, and its limit is
+  // worth stating plainly: it erases the memory held IN THAT SCOPE. It does not
+  // reach memory an agent workspace independently recorded about the same
+  // person. A subject scope makes subject erasure possible and auditable; it
+  // does not retroactively consolidate data written elsewhere.
+  rpc DeleteScope(DeleteScopeRequest) returns (DeleteScopeResponse) {
+    option (google.api.http) = {delete: "/v1/scopes/{scope_id}"};
+  }
+}
+
+// Which kind of memory scope a row is. Fixed at creation.
+enum ScopeKind {
+  // Unset. On CreateScope this is rejected: the kind is an explicit input, never
+  // inferred from the request shape or from the identifier's spelling, because
+  // inferring it would make a naming convention load-bearing for authorization.
+  // On ListScopes it means "both kinds". On a returned scope it never appears.
+  SCOPE_KIND_UNSPECIFIED = 0;
+  // An autonomous-worker workspace: everything the platform held before scopes
+  // had a kind, and what AgentService creates. A scope recorded before the kind
+  // existed reads as this one.
+  SCOPE_KIND_AGENT = 1;
+  // A durable principal, typically an end user, whose memory is owned by no
+  // single agent. Authorized through its own selector namespace, which is
+  // independent of and empty by default relative to agent reach.
+  SCOPE_KIND_SUBJECT = 2;
+}
+
+// A single memory scope of either kind.
+message MemoryScope {
+  // Enterprise that owns this scope, resolved from the caller's token. Echoed
+  // for clarity; it is never accepted from a request body.
+  string enterprise_id = 1;
+  string scope_id = 2; // unique within the enterprise ACROSS both kinds
+  string scope_name = 3;
+  ScopeKind kind = 4;
+  string region = 5; // location id this scope is pinned to, e.g. "us-east-1"
+  // Lifecycle state. This is AgentService's enum rather than a parallel one: both
+  // kinds are rows in the same root table with the same status column, so a
+  // second enum would be a second name for one set of values.
+  AgentStatus status = 6;
+  google.protobuf.Timestamp created_at = 7; // server-assigned commit timestamp
+  // Human-readable detail for a non-terminal/failed status. Empty for a plain
+  // ACTIVE scope.
+  string status_detail = 8;
+}
+
+// Request message for the ScopeService.CreateScope rpc.
+message CreateScopeRequest {
+  string scope_id = 1; // caller-chosen id, unique within the enterprise across both kinds
+  string scope_name = 2;
+  // REQUIRED. SCOPE_KIND_UNSPECIFIED is rejected with INVALID_ARGUMENT rather
+  // than defaulted, so creating a scope always says which authorization regime
+  // it is entering.
+  ScopeKind kind = 3;
+  // Optional location identifier (e.g. "us-east-1"). Must be one the platform
+  // offers (see PlatformService.ListLocations); when empty the default location
+  // is used.
+  string region = 4;
+}
+
+// Response message for the ScopeService.CreateScope rpc.
+message CreateScopeResponse {
+  MemoryScope scope = 1;
+}
+
+// Request message for the ScopeService.GetScope rpc.
+message GetScopeRequest {
+  string scope_id = 1; // path parameter
+}
+
+// Response message for the ScopeService.GetScope rpc.
+message GetScopeResponse {
+  MemoryScope scope = 1;
+}
+
+// Request message for the ScopeService.ListScopes rpc.
+message ListScopesRequest {
+  int32 page_size = 1; // max scopes to return; server picks a default when 0
+  string page_token = 2; // next_page_token from a prior response; empty for the first page
+  // Optional kind filter. Unspecified returns both kinds.
+  ScopeKind kind = 3;
+}
+
+// Response message for the ScopeService.ListScopes rpc.
+message ListScopesResponse {
+  repeated MemoryScope scopes = 1;
+  string next_page_token = 2; // empty when there are no more pages
+}
+
+// Request message for the ScopeService.DeleteScope rpc.
+message DeleteScopeRequest {
+  string scope_id = 1; // path parameter
+}
+
+// Response message for the ScopeService.DeleteScope rpc.
+//
+// The erasure receipt: the instant the cascade committed, with no enumeration of
+// what was removed, on the same terms and for the same reasons as
+// DeleteAgentResponse.
+message DeleteScopeResponse {
+  google.protobuf.Timestamp deleted_at = 1; // cascade-delete commit timestamp
+}

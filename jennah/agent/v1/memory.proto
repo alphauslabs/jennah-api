@@ -19,8 +19,12 @@ service MemoryService {
   // Returns a receipt: the commit timestamp and per-memory-type row counts.
   rpc CommitMemory(CommitMemoryRequest) returns (CommitMemoryResponse) {
     option (google.api.http) = {
-      post: "/v1/agents/{agent_instance_id}/memory:commit"
+      post: "/v1/agents/{scope_id}/memory:commit"
       body: "*"
+      additional_bindings: {
+        post: "/v1/scopes/{scope_id}/memory:commit"
+        body: "*"
+      }
     };
   }
 
@@ -34,8 +38,12 @@ service MemoryService {
   // AgentInstanceId) slice.
   rpc QueryMemory(QueryMemoryRequest) returns (QueryMemoryResponse) {
     option (google.api.http) = {
-      post: "/v1/agents/{agent_instance_id}/memory:query"
+      post: "/v1/agents/{scope_id}/memory:query"
       body: "*"
+      additional_bindings: {
+        post: "/v1/scopes/{scope_id}/memory:query"
+        body: "*"
+      }
     };
   }
 
@@ -49,8 +57,12 @@ service MemoryService {
   // read-only diagnostic surface, not a retrieval path.
   rpc InspectMemory(InspectMemoryRequest) returns (InspectMemoryResponse) {
     option (google.api.http) = {
-      post: "/v1/agents/{agent_instance_id}/memory:inspect"
+      post: "/v1/agents/{scope_id}/memory:inspect"
       body: "*"
+      additional_bindings: {
+        post: "/v1/scopes/{scope_id}/memory:inspect"
+        body: "*"
+      }
     };
   }
 
@@ -67,8 +79,12 @@ service MemoryService {
   // AlreadyExists. This is the graph.supersede surface in the SDK.
   rpc SupersedeEdge(SupersedeEdgeRequest) returns (SupersedeEdgeResponse) {
     option (google.api.http) = {
-      post: "/v1/agents/{agent_instance_id}/graph/edges:supersede"
+      post: "/v1/agents/{scope_id}/graph/edges:supersede"
       body: "*"
+      additional_bindings: {
+        post: "/v1/scopes/{scope_id}/graph/edges:supersede"
+        body: "*"
+      }
     };
   }
 
@@ -90,8 +106,12 @@ service MemoryService {
   // rankable would go on occupying the limited slots a caller injects into a prompt.
   rpc SupersedeChunk(SupersedeChunkRequest) returns (SupersedeChunkResponse) {
     option (google.api.http) = {
-      post: "/v1/agents/{agent_instance_id}/vectors/chunks:supersede"
+      post: "/v1/agents/{scope_id}/vectors/chunks:supersede"
       body: "*"
+      additional_bindings: {
+        post: "/v1/scopes/{scope_id}/vectors/chunks:supersede"
+        body: "*"
+      }
     };
   }
 }
@@ -105,7 +125,13 @@ service MemoryService {
 // Any subset of the three section fields may be present; at least one SHOULD
 // be. All present sections are written in the same transaction.
 message CommitMemoryRequest {
-  string agent_instance_id = 1; // route path parameter; never read from the body
+  // DEPRECATED, superseded by `scope_id`, which names the same value for a
+  // scope of either kind. Read only when `scope_id` is empty, so existing gRPC
+  // callers keep working unchanged; both HTTP routes bind `scope_id`, so a REST
+  // caller never populates this one. Setting both to DIFFERENT values is
+  // INVALID_ARGUMENT rather than resolved by precedence, because a request that
+  // names two scopes has not said which one it means.
+  string agent_instance_id = 1 [deprecated = true];
 
   // Execution-log section: a single step the agent recorded. Absent to commit
   // no log step.
@@ -122,6 +148,25 @@ message CommitMemoryRequest {
   // merely reported: if the model truncates any chunk whose vector the server
   // generated, the commit is rejected and no section's rows are written.
   bool reject_on_truncation = 5;
+
+  // Optional target memory scope, defaulting to the scope named by the route.
+  // Every section of the commit is applied to this ONE scope in one transaction.
+  //
+  // A commit never writes more than one scope, and that holds even when two
+  // scopes happen to share a data-plane database. A commit spanning scopes is
+  // impossible across regions, so permitting it for co-resident scopes alone
+  // would make the atomicity a caller can rely on depend on deployment topology
+  // rather than on the contract. Naming a second scope is INVALID_ARGUMENT.
+  string target_scope = 6;
+
+  // Route path parameter, never read from the body: the memory scope this commit
+  // addresses, of EITHER kind. Bound by both `/v1/agents/{scope_id}/...` and
+  // `/v1/scopes/{scope_id}/...`, which are one operation reached two ways: the
+  // agent form is the agent-kind view and the scope form is the general one.
+  //
+  // It replaces `agent_instance_id`, which named the same value back when a
+  // workspace was the only kind of scope there was.
+  string scope_id = 7;
 }
 
 // A single execution-memory step. On CommitMemory only the payload fields are
@@ -134,6 +179,10 @@ message ExecutionLogStep {
   string tool_input = 4;
   string tool_output = 5;
   google.protobuf.Timestamp timestamp = 6; // output-only; server commit timestamp
+  // OUTPUT-ONLY, like `timestamp`: the memory scope this step was read from.
+  // Ignored on CommitMemory, where the scope written is CommitMemoryRequest's
+  // target_scope or the route's scope, never a per-section field.
+  string scope_id = 7;
 }
 
 // A semantic-memory chunk to upsert.
@@ -250,6 +299,12 @@ message CommitMemoryResponse {
   // that content, so it has nothing to report about it. A precomputed vector's
   // fidelity is the caller's own concern.
   repeated string truncated_chunk_ids = 6;
+
+  // The scope this commit was written to: the request's target_scope when it
+  // named one, otherwise the scope named by the route. Reported so a caller that
+  // relies on the default can confirm which scope received the write rather than
+  // inferring it.
+  string scope_id = 7;
 }
 
 // ---------------------------------------------------------------------------
@@ -261,7 +316,13 @@ message CommitMemoryResponse {
 // Any subset of the three section fields may be present. All present sections
 // are evaluated at one read timestamp.
 message QueryMemoryRequest {
-  string agent_instance_id = 1; // route path parameter; never read from the body
+  // DEPRECATED, superseded by `scope_id`, which names the same value for a
+  // scope of either kind. Read only when `scope_id` is empty, so existing gRPC
+  // callers keep working unchanged; both HTTP routes bind `scope_id`, so a REST
+  // caller never populates this one. Setting both to DIFFERENT values is
+  // INVALID_ARGUMENT rather than resolved by precedence, because a request that
+  // names two scopes has not said which one it means.
+  string agent_instance_id = 1 [deprecated = true];
 
   // Semantic (vector/ANN) section. Absent to skip semantic retrieval.
   SemanticQuery semantic = 2;
@@ -279,6 +340,53 @@ message QueryMemoryRequest {
   // Optional as-of read timestamp, applied UNIFORMLY to every section so all
   // sections observe the same historical instant. Empty reads the latest data.
   google.protobuf.Timestamp as_of = 7;
+
+  // Optional additional memory scopes to evaluate ALONGSIDE the scope named by
+  // the route, typically a subject scope read together with an agent's own
+  // workspace. Empty means the single-scope behavior that predates this field,
+  // identically: same request, same evaluation, same response.
+  //
+  // Every section of the query is evaluated against all requested scopes in ONE
+  // read snapshot, so the cross-type consistency guarantee becomes a cross-scope
+  // one: no scope's result reflects a write another scope's result cannot see.
+  // Semantic results are ranked TOGETHER over the union of the requested scopes,
+  // so the returned set is the globally nearest rather than a per-scope top-k
+  // concatenated, and every returned item names the scope it came from.
+  //
+  // Three refusals, all deliberate and none of them silent:
+  //
+  //   - A scope the caller is not authorized to reach refuses the whole query
+  //     with PERMISSION_DENIED. It is never dropped from the set, because a
+  //     silently narrowed set returns a partial answer indistinguishable from a
+  //     complete one.
+  //   - Every named scope must resolve to the SAME data-plane database. One
+  //     naming a scope homed in another region is refused with an error
+  //     identifying the offending scope and the mismatch, never satisfied by
+  //     reading each database separately: two databases cannot share a read
+  //     snapshot, so combining their results would present two instants as one
+  //     consistent answer. A query naming exactly ONE scope is servable from
+  //     anywhere, because routing resolves that scope to its own region.
+  //   - The number of scopes in one query is bounded by a server maximum;
+  //     exceeding it is refused with an error naming the limit rather than
+  //     truncated to the first N. Semantic search is exact KNN, affordable
+  //     because each scope is a small contiguous key range, and a multi-scope
+  //     query scans one such range per scope.
+  //
+  // Graph traversal stays INSIDE a scope: an edge connects nodes within one
+  // scope, so a multi-scope graph section returns one subgraph per requested
+  // scope and never a path crossing from one into another. Where a query links
+  // its semantic and graph sections, traversal expands within the scope of the
+  // candidate it started from.
+  repeated string additional_scopes = 8;
+
+  // Route path parameter, never read from the body: the memory scope this query
+  // addresses, of EITHER kind. Bound by both `/v1/agents/{scope_id}/...` and
+  // `/v1/scopes/{scope_id}/...`, which are one operation reached two ways: the
+  // agent form is the agent-kind view and the scope form is the general one.
+  //
+  // It replaces `agent_instance_id`, which named the same value back when a
+  // workspace was the only kind of scope there was.
+  string scope_id = 9;
 }
 
 // Direction of vector+graph fusion when a query links the two sections.
@@ -479,12 +587,26 @@ message SemanticMatch {
   // The chunk's stored metadata, read in the same snapshot as the hit, so a hit
   // and its attribution can never disagree. Empty when the chunk has none.
   map<string, string> metadata = 4;
+
+  // The memory scope this match came from. Always populated, including for a
+  // single-scope query, so attributing a recalled memory to its origin never
+  // depends on how the query was shaped. Chunk ids are unique within a scope,
+  // not across scopes, so this is what makes a fused ranking attributable.
+  string scope_id = 5;
 }
 
 // Graph traversal result rows. Each row carries the matched elements' key
 // fields (node ids and labels, and edge relationship types) keyed by gateway-
 // assigned binding names, so the shape is carried as a structured value rather
 // than a fixed schema.
+//
+// Scope provenance rides in the row itself, under the reserved key `_scope`,
+// rather than as a field beside it: the row has no fixed schema to add a field
+// to, and a parallel array would have to stay index-aligned with one. The key
+// cannot collide with a caller's binding, because binding names are assigned by
+// the gateway and never taken from the request. Every row carries it, including
+// for a single-scope query, and no returned path crosses scopes, so one row
+// names exactly one scope.
 message GraphResult {
   repeated google.protobuf.Struct rows = 1;
 }
@@ -496,6 +618,11 @@ message LogResult {
 // The linked semantic+graph view. Its exact shape depends on fusion direction
 // and is carried as structured values until the fused-result schema is pinned
 // down; see the unified-memory spec's fusion requirements.
+//
+// Each item names its scope under the reserved key `_scope`, on the same terms
+// as GraphResult. A fused item never joins a chunk in one scope to an entity in
+// another, because traversal expands within the scope of the candidate it
+// started from, so one item names exactly one scope.
 message FusedResult {
   repeated google.protobuf.Struct items = 1;
 }
@@ -512,7 +639,13 @@ message FusedResult {
 // unlike QueryMemory this lists stored rows for debugging, so a section is
 // requested simply by being present, bounded by its limit.
 message InspectMemoryRequest {
-  string agent_instance_id = 1; // route path parameter; never read from the body
+  // DEPRECATED, superseded by `scope_id`, which names the same value for a
+  // scope of either kind. Read only when `scope_id` is empty, so existing gRPC
+  // callers keep working unchanged; both HTTP routes bind `scope_id`, so a REST
+  // caller never populates this one. Setting both to DIFFERENT values is
+  // INVALID_ARGUMENT rather than resolved by precedence, because a request that
+  // names two scopes has not said which one it means.
+  string agent_instance_id = 1 [deprecated = true];
 
   // Vector section: list stored chunks (content only). Absent to skip vectors.
   InspectVectors vectors = 2;
@@ -524,6 +657,16 @@ message InspectMemoryRequest {
   // Optional as-of read timestamp, applied UNIFORMLY to every section so all
   // sections observe the same historical instant. Empty reads the latest data.
   google.protobuf.Timestamp as_of = 5;
+
+  // Route path parameter, never read from the body: the memory scope this
+  // inspection
+  // addresses, of EITHER kind. Bound by both `/v1/agents/{scope_id}/...` and
+  // `/v1/scopes/{scope_id}/...`, which are one operation reached two ways: the
+  // agent form is the agent-kind view and the scope form is the general one.
+  //
+  // It replaces `agent_instance_id`, which named the same value back when a
+  // workspace was the only kind of scope there was.
+  string scope_id = 6;
 }
 
 // Vector-section listing request. Enumerates stored chunks; the embedding vector
@@ -679,7 +822,13 @@ message GraphInspectResult {
 
 // Request for MemoryService.SupersedeEdge.
 message SupersedeEdgeRequest {
-  string agent_instance_id = 1; // route path parameter; never read from the body
+  // DEPRECATED, superseded by `scope_id`, which names the same value for a
+  // scope of either kind. Read only when `scope_id` is empty, so existing gRPC
+  // callers keep working unchanged; both HTTP routes bind `scope_id`, so a REST
+  // caller never populates this one. Setting both to DIFFERENT values is
+  // INVALID_ARGUMENT rather than resolved by precedence, because a request that
+  // names two scopes has not said which one it means.
+  string agent_instance_id = 1 [deprecated = true];
 
   // The currently-held edge to close. Resolved within the caller's slice; an
   // unknown id is NotFound (never a cross-slice touch).
@@ -693,6 +842,16 @@ message SupersedeEdgeRequest {
   // the replacement already closed; its transaction-time is server-assigned. The
   // updated_at field is ignored.
   GraphEdge new_edge = 3;
+
+  // Route path parameter, never read from the body: the memory scope this
+  // supersession
+  // addresses, of EITHER kind. Bound by both `/v1/agents/{scope_id}/...` and
+  // `/v1/scopes/{scope_id}/...`, which are one operation reached two ways: the
+  // agent form is the agent-kind view and the scope form is the general one.
+  //
+  // It replaces `agent_instance_id`, which named the same value back when a
+  // workspace was the only kind of scope there was.
+  string scope_id = 4;
 }
 
 // The supersession receipt: the commit timestamp of the transaction that closed
@@ -703,7 +862,13 @@ message SupersedeEdgeResponse {
 
 // Request for MemoryService.SupersedeChunk.
 message SupersedeChunkRequest {
-  string agent_instance_id = 1; // route path parameter; never read from the body
+  // DEPRECATED, superseded by `scope_id`, which names the same value for a
+  // scope of either kind. Read only when `scope_id` is empty, so existing gRPC
+  // callers keep working unchanged; both HTTP routes bind `scope_id`, so a REST
+  // caller never populates this one. Setting both to DIFFERENT values is
+  // INVALID_ARGUMENT rather than resolved by precedence, because a request that
+  // names two scopes has not said which one it means.
+  string agent_instance_id = 1 [deprecated = true];
 
   // The currently-held chunk to close. Resolved within the caller's slice; an
   // unknown id is NotFound (never a cross-slice touch). Its content is left
@@ -719,6 +884,16 @@ message SupersedeChunkRequest {
   // and metadata fields a committed chunk does, including server-side embedding
   // generation when `embedding` is empty.
   VectorChunk new_chunk = 3;
+
+  // Route path parameter, never read from the body: the memory scope this
+  // supersession
+  // addresses, of EITHER kind. Bound by both `/v1/agents/{scope_id}/...` and
+  // `/v1/scopes/{scope_id}/...`, which are one operation reached two ways: the
+  // agent form is the agent-kind view and the scope form is the general one.
+  //
+  // It replaces `agent_instance_id`, which named the same value back when a
+  // workspace was the only kind of scope there was.
+  string scope_id = 4;
 }
 
 // The supersession receipt: the commit timestamp of the transaction that closed
