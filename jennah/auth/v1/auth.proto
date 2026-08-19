@@ -523,6 +523,17 @@ message ApiKey {
   // A "per-project key" is simply a key whose dataset_selectors names one
   // dataset.
   repeated string dataset_selectors = 12;
+  // Subject scopes this key may reach, as subject selectors, in a THIRD namespace
+  // under the same grammar and the same no-default rule. Empty means the key can
+  // reach no subject scope, which is what every key minted before this namespace
+  // existed carries: nothing was backfilled, so no live credential gained reach
+  // over a person's memory when subject scopes arrived.
+  //
+  // Kept separate from agent_selectors even though an agent workspace and a
+  // subject scope share one identifier space. Which namespace governs a scope is
+  // decided by the scope's KIND, resolved server-side, never by which field an id
+  // was written into. Omitted entirely when the caller lacks agent.subjects:read.
+  repeated string subject_selectors = 13;
 }
 
 // Request message for the AuthService.CreateApiKey rpc.
@@ -561,6 +572,15 @@ message CreateApiKeyRequest {
   // When empty the key reaches NO dataset, for the same reason it reaches no
   // agent when agent_selectors is empty.
   repeated string dataset_selectors = 5;
+  // Subject scopes the key may reach, as subject selectors, under the same rules
+  // in the subject namespace. Containment is checked PER NAMESPACE: the caller's
+  // agent reach can never fund a subject grant, however broad it is, and "*" here
+  // requires agent.subjects:manage rather than agent.access:manage.
+  //
+  // When empty the key reaches NO subject scope. That is the direction to leave it
+  // in unless a key genuinely needs to read a person's memory: this namespace is
+  // the one an erasure obligation attaches to.
+  repeated string subject_selectors = 6;
 }
 
 // Response message for the AuthService.CreateApiKey rpc.
@@ -802,6 +822,12 @@ message CustomRole {
   // though the built-in member role carries the datastore data-plane
   // permissions. Omitted entirely when the caller lacks datastore.access:read.
   repeated string dataset_selectors = 8;
+  // Subject scopes holders of this role may reach, as subject selectors, in a
+  // third namespace under the same grammar and matching rules. Empty means holders
+  // reach NO subject scope: the default, and what every role carried when the
+  // namespace was introduced, because nothing was backfilled. Omitted entirely
+  // when the caller lacks agent.subjects:read.
+  repeated string subject_selectors = 9;
 }
 
 // A presence-detectable list of agent selectors. Used where an unset field must
@@ -820,6 +846,13 @@ message AgentSelectorList {
 // two are set independently.
 message DatasetSelectorList {
   repeated string selectors = 1; // may be empty, meaning "no dataset access"
+}
+
+// A presence-detectable list of SUBJECT selectors, the subject namespace's
+// counterpart to the two above and used for the same reason. Separate again,
+// because the three sets are granted and replaced independently.
+message SubjectSelectorList {
+  repeated string selectors = 1; // may be empty, meaning "no subject access"
 }
 
 // Request message for the AuthService.ListPermissions rpc.
@@ -851,6 +884,17 @@ message CreateRoleRequest {
   // dataset-access administration to someone who administers no agent access.
   // Empty (the default) creates a role that reaches no dataset.
   repeated string dataset_selectors = 4;
+  // Subject scopes holders of this role may reach (see
+  // CustomRole.subject_selectors). Containment is checked PER NAMESPACE against
+  // the caller's own subject reach, "*" requires agent.subjects:manage, and
+  // setting a non-empty set requires agent.subjects:manage in addition to
+  // iam.roles:manage.
+  //
+  // The three access permissions are independent, so an enterprise may keep
+  // authority over per-person memory with a different administrator from the one
+  // who administers agent or dataset access. Empty (the default) creates a role
+  // that reaches no subject scope.
+  repeated string subject_selectors = 5;
 }
 
 // Response message for the AuthService.CreateRole rpc.
@@ -927,6 +971,11 @@ message UpdateRoleRequest {
   // and vice versa. Changing the stored set requires datastore.access:manage in
   // addition to iam.roles:manage.
   DatasetSelectorList dataset_selectors = 5;
+  // Optional replacement for the role's subject selectors, with the same
+  // unset-means-unchanged semantics and the same per-namespace presence tracking
+  // as the two above. Changing the stored set requires agent.subjects:manage in
+  // addition to iam.roles:manage.
+  SubjectSelectorList subject_selectors = 7;
   // Empties the role's permission set. This is the only way to do it: an empty
   // `permissions` list means unchanged, so revoking every grant a role confers is
   // something a caller has to say rather than something they can do by omission.
