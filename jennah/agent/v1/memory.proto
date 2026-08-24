@@ -183,6 +183,23 @@ message ExecutionLogStep {
   // Ignored on CommitMemory, where the scope written is CommitMemoryRequest's
   // target_scope or the route's scope, never a per-section field.
   string scope_id = 7;
+
+  // Optional caller-supplied tags on this step, and the reason the log section
+  // finally has a predicate: until this field the log took `limit` and `since`
+  // and nothing else, which made it the memory type a session filter most
+  // naturally applies to and the one it could not be applied to.
+  //
+  // Same mechanism, same rules, as VectorChunk.metadata and the graph kinds: keys
+  // match `[A-Za-z0-9_.-]{1,128}`, at most 32 per step, values are opaque strings.
+  // Filter on them with LogQuery.metadata.
+  //
+  // A step is APPEND-ONLY — reusing a step_id is a conflict, not a replace — so
+  // unlike a chunk's or a node's, a step's metadata is written once and cannot be
+  // rewritten. That follows from the step's own write semantics, not from a
+  // different metadata rule.
+  //
+  // Returned with the step wherever the step is returned.
+  map<string, string> metadata = 8;
 }
 
 // A semantic-memory chunk to upsert.
@@ -204,13 +221,16 @@ message VectorChunk {
   //
   // Metadata is NOT embedded (only raw_content is), so putting provenance here
   // instead of inside the text keeps it out of the vector, where it would
-  // otherwise dilute similarity and still not be filterable.
+  // otherwise dilute similarity and still not be filterable. That is the ONE rule
+  // specific to chunks; everything else below is the shared mechanism, and the
+  // same tags on a graph node, a graph edge, and a log step mean the same thing
+  // and filter the same way.
   //
   // An upsert REPLACES the chunk's whole metadata set rather than merging into it:
   // a key absent from this map is removed.
   //
   // Keys must match `[A-Za-z0-9_.-]{1,128}`; a key outside that set is rejected
-  // with INVALID_ARGUMENT. At most 32 keys per chunk.
+  // with INVALID_ARGUMENT. At most 32 keys per item.
   map<string, string> metadata = 4;
 
   // Bi-temporal valid-time window (add-temporal-vectors), both optional on write
@@ -251,6 +271,22 @@ message GraphNode {
   // is read back via InspectMemory. Nodes are written create-or-replace, so this
   // is the last write, not first creation. Ignored on CommitMemory.
   google.protobuf.Timestamp updated_at = 4;
+
+  // Optional caller-supplied tags on this node, the same mechanism VectorChunk
+  // carries and with the same rules: keys match `[A-Za-z0-9_.-]{1,128}`, at most
+  // 32 per item, values are opaque strings, and a write REPLACES the node's whole
+  // set rather than merging into it.
+  //
+  // METADATA IS NOT `properties`, and the division matters. `properties` is the
+  // node's PAYLOAD: arbitrary nested JSON, stored and returned, never filterable.
+  // Metadata is its filterable INDEX: flat strings that a query can narrow on
+  // (GraphNodeMatch.metadata). The one-line rule is "if you want to filter on it,
+  // it is metadata; if it is data the node carries, it is properties" — and
+  // putting the same value in both is legitimate and expected, because a flat
+  // filterable copy of a nested payload field is exactly what an index is.
+  //
+  // Returned with the node wherever the node is returned.
+  map<string, string> metadata = 5;
 }
 
 message GraphEdge {
@@ -274,6 +310,11 @@ message GraphEdge {
   // them on read-back in this change.
   google.protobuf.Timestamp valid_at = 7;
   google.protobuf.Timestamp invalid_at = 8;
+
+  // Optional caller-supplied tags on this edge, on exactly the terms
+  // GraphNode.metadata describes — including the payload-versus-index division
+  // against `properties`. Filter on them with GraphStep.metadata.
+  map<string, string> metadata = 9;
 }
 
 // The commit receipt: a commit timestamp plus how many rows were written per
@@ -468,22 +509,32 @@ message SemanticQuery {
   google.protobuf.Timestamp as_of_tx = 6;
 }
 
-// One predicate over a chunk's metadata.
+// One predicate over an ITEM's metadata — a vector chunk, a graph node, a graph
+// edge, or an execution-log step. It is the same message in every section that
+// accepts a filter (SemanticQuery.filters, GraphNodeMatch.metadata,
+// GraphStep.metadata, LogQuery.metadata) with the same semantics, so a caller
+// learns one grammar and gets the same answer whichever memory type the question
+// is about.
 message MetadataFilter {
-  // Operator selects how `value` is compared against the chunk's stored value
+  // Operator selects how `value` is compared against the item's stored value
   // for `key`.
   //
-  // A chunk that does not carry `key` at all matches NO operator, including
+  // An item that does not carry `key` at all matches NO operator, including
   // EQUALS: there is no value to compare or order against, so absence excludes.
   // Filters combine conjunctively (all must match); there is no disjunction
   // between them.
   enum Operator {
     OPERATOR_UNSPECIFIED = 0; // treated as EQUALS
     OPERATOR_EQUALS = 1;
-    // Ordered comparisons. Each reads "the chunk's stored value <op> `value`",
+    // Ordered comparisons. Each reads "the item's stored value <op> `value`",
     // e.g. OPERATOR_GREATER_THAN_OR_EQUAL with value "2026-07-01" matches
-    // chunks whose stored value sorts at or after that string. A bounded range
+    // items whose stored value sorts at or after that string. A bounded range
     // is two filters on the same key.
+    //
+    // Comparison is LEXICOGRAPHIC over the stored string. There is no type tag on
+    // a metadata value and the platform never infers one, so encode for the order
+    // you want: ISO-8601 dates and zero-padded numbers sort correctly, "9" and
+    // "10" do not.
     OPERATOR_LESS_THAN = 2;
     OPERATOR_LESS_THAN_OR_EQUAL = 3;
     OPERATOR_GREATER_THAN = 4;
@@ -530,6 +581,24 @@ message GraphQuery {
 message GraphNodeMatch {
   string label = 1; // optional equality filter on the node's `Label`
   repeated PropertyFilter filters = 2; // optional property equality filters (values bound)
+
+  // Optional metadata filters on this node, using the same MetadataFilter message
+  // and the same semantics the semantic and log sections use.
+  //
+  // THIS IS A SEPARATE LIST FROM `filters`, and it stays separate deliberately.
+  // `filters` names FIRST-CLASS COLUMNS and is allowlisted (`NodeId`, `Label`) so
+  // that a caller cannot filter on a clamp column. If the two lists merged,
+  // resolving a key would mean asking "is this the name of a column?", which would
+  // hand a caller-chosen string the power to pick which branch it takes and make a
+  // metadata key named `AgentInstanceId` a question rather than an answer. Two
+  // lists means a key's meaning is fixed by which list it is in.
+  //
+  // The rule for choosing: filtering a stored column (`NodeId`, `Label`) is
+  // `filters`; filtering a tag you wrote in GraphNode.metadata is `metadata`.
+  //
+  // Applied to the matched node BEFORE the traversal expands from it, so a
+  // non-matching anchor is never expanded rather than expanded and discarded.
+  repeated MetadataFilter metadata = 3;
 }
 
 // One single-hop traversal to an adjacent node.
@@ -537,6 +606,11 @@ message GraphStep {
   string relationship_type = 1; // optional equality filter on the edge's `RelationshipType`
   GraphDirection direction = 2; // direction relative to the current node
   GraphNodeMatch node = 3; // constraints on the node reached by this hop
+
+  // Optional metadata filters on the EDGE this hop traverses (not on the node it
+  // reaches — that is `node.metadata`). Same message, same semantics, and applied
+  // to the edge element before the hop is taken.
+  repeated MetadataFilter metadata = 4;
 }
 
 // Traversal direction of a hop relative to the current node.
@@ -547,10 +621,17 @@ enum GraphDirection {
   GRAPH_DIRECTION_ANY = 3; // (current)-[edge]-(next), either direction
 }
 
-// A single property equality filter. `key` is a property name validated as a
-// safe identifier by the gateway (resolved to a first-class column when it is
-// one, e.g. `NodeId`, `Label`; otherwise a JSON `Properties` key); `value`
-// binds as a query parameter and is never interpolated into query text.
+// A single equality filter on a FIRST-CLASS COLUMN of the node. `key` is
+// ALLOWLISTED to `NodeId` and `Label`; any other key is rejected with
+// INVALID_ARGUMENT. `value` binds as a query parameter and is never interpolated
+// into query text.
+//
+// The allowlist is what keeps a caller off the clamp columns, so it is narrow on
+// purpose and does not fall back to anything. In particular it does NOT reach into
+// `properties`: that field is a payload and is not filterable at all, because
+// filtering a JSON column needs a caller-supplied key inside a JSON path and that
+// is an injection surface the platform does not open. To filter on something a
+// node carries, tag it in GraphNode.metadata and use GraphNodeMatch.metadata.
 message PropertyFilter {
   string key = 1;
   google.protobuf.Value value = 2;
@@ -561,6 +642,20 @@ message PropertyFilter {
 message LogQuery {
   int32 limit = 1; // max steps to return
   google.protobuf.Timestamp since = 2; // optional recency lower bound
+
+  // Optional metadata filters on the steps, using the same MetadataFilter message
+  // and the same semantics as every other section.
+  //
+  // APPLIED BEFORE `limit` SELECTS, not after. Asking for the 20 most recent steps
+  // tagged `session=s-991` returns the 20 most recent steps THAT CARRY THAT TAG,
+  // not the 20 most recent steps of any kind filtered down to whichever happen to
+  // match. Those are very different answers when another session has been busier,
+  // and the second one silently returns nothing.
+  //
+  // A filtered section returning fewer steps than `limit` means fewer steps
+  // matched. That is the caller's own narrowing and is reproducible from the
+  // filter; it is not the truncation the tenant clamp forbids.
+  repeated MetadataFilter metadata = 3;
 }
 
 // Response for MemoryService.QueryMemory. Each result section is present only
