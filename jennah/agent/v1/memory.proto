@@ -130,6 +130,53 @@ service MemoryService {
       }
     };
   }
+
+  // Forms memory FROM RAW CONVERSATION, deciding what is worth remembering
+  // instead of being told (add-memory-cognition). It takes the turns an agent
+  // exchanged, extracts candidate facts and relationships from them with a
+  // language model, retrieves what the scope already holds near each candidate,
+  // decides per candidate whether it is new, a revision of something held, or
+  // already known, and applies the result as ONE CommitMemory in one
+  // transaction. It returns a receipt naming every candidate and its decision.
+  //
+  // This is the "work out what to store" surface; CommitMemory is the "store
+  // this" one. It is ADDITIVE: a caller that authors its own writes keeps using
+  // CommitMemory unchanged and pays none of this operation's cost.
+  //
+  // THREE THINGS A CALLER MUST KNOW BEFORE USING IT.
+  //
+  // It is a DIFFERENT LATENCY CLASS. Two model round-trips plus a retrieval plus
+  // a commit means seconds, not the milliseconds CommitMemory takes. Do not put
+  // it on a request path that expects a commit's latency.
+  //
+  // It will frequently STORE NOTHING, and that is success. A conversation
+  // holding nothing worth remembering forms no memory and returns a receipt with
+  // zero candidates; a conversation restating what the scope already holds forms
+  // no memory and returns a receipt of `known` decisions. Neither is an error,
+  // and the receipt is what distinguishes them from each other and from a
+  // refusal.
+  //
+  // Submitted turns are SENT TO AN EXTERNAL INFERENCE SERVICE (Vertex AI) in the
+  // scope's own region, exactly as the caller wrote them. The platform does not
+  // scan, filter, or redact formation input. A region with no generative model
+  // configured REFUSES formation with FAILED_PRECONDITION rather than inferring
+  // in another region, because a region-pinned scope whose content is inferred
+  // elsewhere breaks a residency commitment invisibly.
+  //
+  // Formation NEVER DELETES and never overwrites: a revision closes the prior
+  // assertion's valid-time window and inserts a replacement, exactly as
+  // SupersedeEdge and SupersedeChunk do, so what the agent believed before the
+  // formation stays readable by an as-of query.
+  //
+  // Retry it with `formation_key`. Extraction is nondeterministic, so a blind
+  // resend would form a SECOND, DIFFERENT set of memory; a resend under the same
+  // key returns the first call's receipt without re-extracting.
+  rpc FormMemory(FormMemoryRequest) returns (FormMemoryResponse) {
+    option (google.api.http) = {
+      post: "/v1/agents/{scope_id}/memory:form"
+      body: "*"
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1130,4 +1177,241 @@ message SupersedeChunkResponse {
   // chunk this operation writes. The supersession SUCCEEDED; the tail of the
   // replacement's raw_content is not represented in its stored vector.
   bool truncated = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Formation
+// ---------------------------------------------------------------------------
+
+// Who produced one conversation turn. Required on every turn: an unset role is
+// INVALID_ARGUMENT rather than defaulted, because defaulting attributes a
+// statement to the wrong speaker, and who said a thing is most of what decides
+// whether it is worth remembering ("I live in Tokyo" from the user is a fact
+// about the user; the same sentence from the assistant may be a guess).
+enum TurnRole {
+  TURN_ROLE_UNSPECIFIED = 0;
+  TURN_ROLE_USER = 1;
+  TURN_ROLE_ASSISTANT = 2;
+  // A system/developer instruction. Extraction reads it as context for the other
+  // turns, not as a source of facts about the world.
+  TURN_ROLE_SYSTEM = 3;
+  // A tool result rendered into the conversation. Prefer ConversationTurn.tools
+  // where the invocation is structured; this role is for a transcript that
+  // already flattened it into a turn.
+  TURN_ROLE_TOOL = 4;
+}
+
+// One tool invocation that occurred at a turn. Field names match
+// ExecutionLogStep's deliberately: the submitted turns are persisted as an
+// execution-log step by the same formation that reads them, so the two describe
+// the same thing with the same words.
+message ToolTrace {
+  string tool_used = 1;
+  string tool_input = 2;
+  string tool_output = 3;
+}
+
+// One conversation turn submitted for formation.
+message ConversationTurn {
+  TurnRole role = 1;
+  // What was said. This text is sent to an external inference service as
+  // written; see FormMemory.
+  string content = 2;
+  // Optional tool invocations that occurred at this turn.
+  repeated ToolTrace tools = 3;
+}
+
+// Request for MemoryService.FormMemory.
+//
+// It carries CONVERSATION, never authored writes. A request that also named a
+// chunk, a node, or an edge to write would make it ambiguous which memory the
+// platform chose and which the caller did, so there is no field for one and a
+// caller wanting both makes two calls: CommitMemory for what it authored,
+// FormMemory for what it wants decided.
+//
+// There is deliberately no `/v1/scopes/{scope_id}/memory:form` binding beside
+// the agent one, unlike every other operation on this service. Formation is
+// specified for an agent workspace in this version; reaching it for a subject
+// scope raises a question this change does not answer (which scope's held
+// memory reconciliation judges against), and a route is easier to add later
+// than to narrow.
+message FormMemoryRequest {
+  // Route path parameter, never read from the body: the agent workspace this
+  // formation reads and writes. Every stage is clamped to the caller's
+  // (EnterpriseId, this scope) slice — extraction has no field that could widen
+  // it and recall and commit take the same clamped paths CommitMemory and
+  // QueryMemory take.
+  string scope_id = 1;
+
+  // The conversation to form memory from, in order. Order is meaningful:
+  // extraction resolves references across turns ("she", "that one", "the second
+  // option"), so a shuffled transcript forms different memory.
+  //
+  // Bounded on two axes, both rejected before the model call rather than
+  // truncated: the number of turns, and the total input tokens they amount to.
+  // An oversize submission is INVALID_ARGUMENT naming the bound it exceeded,
+  // because silently forming memory from a prefix would leave the caller
+  // believing the tail was considered.
+  repeated ConversationTurn turns = 2;
+
+  // An optional caller-chosen key making this formation SAFELY RESENDABLE.
+  //
+  // It is more load-bearing here than an idempotency key usually is. Extraction
+  // is nondeterministic, so a blind resend does not repeat the first attempt: it
+  // forms a second, different set of memory alongside the first. Where this key
+  // is set, a resend returns the FIRST call's receipt and re-extracts nothing.
+  //
+  // It is also what makes a lost race recoverable. Two concurrent formations
+  // that decide to supersede the same assertion cannot both win — the loser's
+  // replacement is rejected and its whole formation aborts — and the safe
+  // response to that is to resend, which needs this key to be safe.
+  //
+  // Scoped to the workspace. Unset means no protection: the platform cannot tell
+  // a resend from a second conversation that happened to be identical.
+  string formation_key = 3;
+}
+
+// What kind of memory a candidate is.
+enum CandidateKind {
+  CANDIDATE_KIND_UNSPECIFIED = 0;
+  // A self-contained statement worth remembering, stored semantically as a
+  // vector chunk.
+  CANDIDATE_KIND_FACT = 1;
+  // A typed, directed assertion between two named entities, stored as graph
+  // nodes and an edge.
+  CANDIDATE_KIND_RELATIONSHIP = 2;
+}
+
+// What reconciliation decided about one candidate.
+enum MemoryDecision {
+  MEMORY_DECISION_UNSPECIFIED = 0;
+  // The scope does not hold this. Written as an idempotent chunk, node, and/or
+  // edge, under an id derived from the candidate's own normalized content.
+  MEMORY_DECISION_NEW = 1;
+  // The scope holds an assertion this candidate replaces. Written as a
+  // SUPERSESSION: the prior assertion's valid-time window is closed and a
+  // replacement is inserted, both remaining stored and queryable. Never an
+  // overwrite of the prior row.
+  MEMORY_DECISION_REVISED = 2;
+  // The scope already holds this. Nothing is written.
+  MEMORY_DECISION_KNOWN = 3;
+  // NOT a reconciliation outcome, and the reason this enum has a fourth value.
+  // The candidate never became memory: it failed the same validation a
+  // caller-supplied value faces on CommitMemory, or its decision could not be
+  // carried out without losing history. It is reported rather than dropped
+  // silently, so a caller can see that extraction found something the platform
+  // declined to write. See FormedCandidate.rejection_reason.
+  MEMORY_DECISION_REJECTED = 4;
+}
+
+// One candidate extraction produced, and what became of it.
+//
+// This is what makes a formation explainable after the fact: a caller can answer
+// "why does my scope hold this memory" and "why was this conversation not
+// remembered" from these records alone, without access to the model call.
+message FormedCandidate {
+  // The id derived from this candidate's normalized content within the scope.
+  // For a written candidate it is the id of the row that was written: the chunk
+  // id for a fact, the edge id for a relationship. Deriving it from content
+  // rather than at random is what makes an identically-worded fact re-extracted
+  // later land on the same row instead of accumulating a near-duplicate.
+  //
+  // It IDENTIFIES the row; it is not a way to fetch it. No memory type has a
+  // by-id read — retrieval is semantic search, graph traversal, and the
+  // InspectMemory listings — so this id is for correlating a receipt with rows
+  // you have in hand, not for looking one up.
+  string candidate_id = 1;
+
+  CandidateKind kind = 2;
+
+  // The candidate as extraction expressed it: for a fact, the text stored as the
+  // chunk's content; for a relationship, a readable rendering of the triple the
+  // three fields below carry structurally.
+  string text = 3;
+
+  // Populated for CANDIDATE_KIND_RELATIONSHIP only, so the receipt carries the
+  // triple rather than only a rendering of it.
+  string source_entity = 4;
+  string relationship_type = 5;
+  string target_entity = 6;
+
+  MemoryDecision decision = 7;
+
+  // The existing memory this candidate was reconciled against, when there was
+  // one. For MEMORY_DECISION_REVISED it is the assertion that was RETIRED (the
+  // supersession's prior id), whose content stays readable by an as-of query.
+  // For MEMORY_DECISION_KNOWN it is the memory already holding this fact, which
+  // is why nothing was written. Empty for a new candidate.
+  string matched_id = 8;
+
+  // Why the platform declined to write this candidate. Populated only with
+  // MEMORY_DECISION_REJECTED, and stated in terms of the rule that refused it
+  // (an invalid metadata key, an unusable identifier, a revision that could not
+  // preserve history), never as a sanitized value that was written instead.
+  string rejection_reason = 9;
+}
+
+// One masking the egress scrubber applied to a submitted turn before that turn
+// reached the inference service.
+//
+// EXPECTED TO BE EMPTY. The configured scrubber masks nothing (see the
+// `drop-secrets-redaction` change), so today this list is always empty and the
+// turns reach the model as written. It is reported rather than assumed so that a
+// caller reads the actual behavior from the receipt instead of inferring it, and
+// so that wiring a real detector later needs no contract change.
+message RedactionRecord {
+  // Index into FormMemoryRequest.turns of the turn that was masked.
+  int32 turn_index = 1;
+  // How many replacements the scrubber made in that turn. The scrubber reports a
+  // count and not what it matched, so this receipt does not claim to either.
+  int32 masked_count = 2;
+}
+
+// The formation receipt: what was extracted, what was decided, and what the
+// resulting commit persisted.
+//
+// A receipt reporting zero candidates is a SUCCESSFUL formation of nothing, and
+// is deliberately distinguishable from a refusal: a formation refused for
+// exceeding its limit returns an error naming the limit, never a receipt.
+message FormMemoryResponse {
+  // The commit timestamp of the single transaction this formation's writes
+  // landed in. Unset when the formation wrote nothing.
+  google.protobuf.Timestamp commit_timestamp = 1;
+
+  // Rows written by that commit, on exactly the terms CommitMemoryResponse
+  // reports them: the write sections count rows, supersessions count operations.
+  int64 execution_log_rows = 2;
+  int64 vector_rows = 3;
+  int64 graph_node_rows = 4;
+  int64 graph_edge_rows = 5;
+  int64 edge_supersessions = 6;
+  int64 chunk_supersessions = 7;
+
+  // Every candidate extraction produced, with its decision. Ordered as
+  // extraction produced them.
+  repeated FormedCandidate candidates = 8;
+
+  // What the egress scrubber masked before the turns reached the model. Empty
+  // while no detector is configured, which is the current and documented state.
+  repeated RedactionRecord redactions = 9;
+
+  // The per-formation candidate ceiling in force, and how many extracted
+  // candidates it discarded. Reported rather than applied silently: a caller
+  // seeing `candidates_dropped` above zero knows the conversation held more than
+  // one formation can carry and should be submitted in pieces. Zero dropped
+  // means every extracted candidate is accounted for in `candidates`.
+  int32 candidate_cap = 10;
+  int32 candidates_dropped = 11;
+
+  // The scope this formation wrote to, echoed for the same reason CommitMemory
+  // echoes it.
+  string scope_id = 12;
+
+  // True when this receipt is a REPLAY: the request carried a formation_key that
+  // had already been used, so this is the earlier call's stored receipt and no
+  // extraction ran. It is the one field that differs from what the first call
+  // returned, and it exists because the rest of the receipt cannot say it — a
+  // caller comparing two responses would otherwise have to wonder whether the
+  // model happened to decide identically twice.
+  bool replayed = 13;
 }
