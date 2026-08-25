@@ -11,12 +11,13 @@ option go_package = "github.com/alphauslabs/jennah-api/agent";
 // MemoryService is the unified memory-data plane for an agent workspace.
 service MemoryService {
   // Applies a multi-section memory step in a SINGLE read-write transaction: an
-  // optional execution-log step, an optional set of vector chunks, and an
-  // optional set of graph writes. The commit is all-or-nothing:
-  // if any section fails (e.g. a vector whose width does not match the
-  // database), no section's rows are written. The commit is rejected, writing
-  // nothing, if the target workspace does not exist under the caller's tenant.
-  // Returns a receipt: the commit timestamp and per-memory-type row counts.
+  // optional execution-log step, an optional set of vector chunks, an optional
+  // set of graph writes, and an optional set of supersessions. The commit is
+  // all-or-nothing: if any section fails (e.g. a vector whose width does not
+  // match the database, or a supersession naming a prior id that is not there),
+  // no section's rows are written. The commit is rejected, writing nothing, if
+  // the target workspace does not exist under the caller's tenant. Returns a
+  // receipt: the commit timestamp and per-memory-type row counts.
   rpc CommitMemory(CommitMemoryRequest) returns (CommitMemoryResponse) {
     option (google.api.http) = {
       post: "/v1/agents/{scope_id}/memory:commit"
@@ -77,6 +78,12 @@ service MemoryService {
   // supersession boundary) is REQUIRED and new_edge.edge_id must differ from
   // prior_edge_id; an unknown prior edge is NotFound and a reused new edge_id is
   // AlreadyExists. This is the graph.supersede surface in the SDK.
+  //
+  // This is the SINGLE-ITEM FORM of CommitMemoryRequest's `supersessions` section,
+  // not a separate mechanism: it constructs that commit and reaches the store the
+  // same way, so the two are observably identical apart from the URL. Use the
+  // section when a supersession must land in the same transaction as other writes;
+  // use this when retiring one fact is the whole operation. Neither is deprecated.
   rpc SupersedeEdge(SupersedeEdgeRequest) returns (SupersedeEdgeResponse) {
     option (google.api.http) = {
       post: "/v1/agents/{scope_id}/graph/edges:supersede"
@@ -104,6 +111,15 @@ service MemoryService {
   // The superseded chunk stops being returned by ordinary semantic search from this
   // point on, which is the operation's purpose: a retired passage that stayed
   // rankable would go on occupying the limited slots a caller injects into a prompt.
+  //
+  // This is the SINGLE-ITEM FORM of CommitMemoryRequest's `supersessions` section,
+  // on the same terms as SupersedeEdge above. One difference is visible to callers
+  // and it is a difference of SHAPE, not of behavior: this request has no
+  // reject_on_truncation field, so a replacement whose generated embedding the
+  // model truncates is REPORTED here (in `truncated`) and never refused. That is
+  // this operation's long-standing contract (refusing would leave a caller with a
+  // fact they have decided is stale and no way to retire it), and it is preserved
+  // by constructing a commit with that flag unset.
   rpc SupersedeChunk(SupersedeChunkRequest) returns (SupersedeChunkResponse) {
     option (google.api.http) = {
       post: "/v1/agents/{scope_id}/vectors/chunks:supersede"
@@ -167,6 +183,25 @@ message CommitMemoryRequest {
   // It replaces `agent_instance_id`, which named the same value back when a
   // workspace was the only kind of scope there was.
   string scope_id = 7;
+
+  // Supersession section: facts to RETIRE while preserving them, each paired with
+  // the replacement that takes over. Absent to commit no supersessions.
+  //
+  // This is the same operation MemoryService.SupersedeEdge and SupersedeChunk
+  // perform, reached as a section so it composes ATOMICALLY with the other
+  // sections: retiring a fact and recording everything that follows from it is one
+  // transaction, at one commit timestamp, under the same all-or-nothing rule. The
+  // standalone RPCs remain available and are the single-item form of exactly this;
+  // neither is deprecated, and both construct a commit carrying this section.
+  //
+  // The section's write discipline DIFFERS from `vectors` and `graph`, and the
+  // difference is the point. Those sections UPSERT: re-writing an id replaces that
+  // row's content, which is how a caller CORRECTS an item. A supersession INSERTS
+  // its replacement and leaves the prior row's content intact, which is how a
+  // caller records that the fact an item asserted has CHANGED. Because it inserts,
+  // a replacement id that already exists is rejected rather than silently
+  // clobbered, and that rejection aborts the whole commit.
+  SupersessionWrite supersessions = 8;
 }
 
 // A single execution-memory step. On CommitMemory only the payload fields are
@@ -243,8 +278,9 @@ message VectorChunk {
   //
   // Setting these on a plain commit is NOT supersession. A re-upsert of an existing
   // chunk_id replaces that row's content and is how a caller CORRECTS a chunk;
-  // replacing a fact while preserving history is MemoryService.SupersedeChunk. The
-  // platform never infers one from the other.
+  // replacing a fact while preserving history is a supersession, expressed either
+  // as this commit's `supersessions` section or as the standalone
+  // MemoryService.SupersedeChunk. The platform never infers one from the other.
   //
   // Read back via InspectMemory, which reports a chunk's whole validity on
   // VectorChunkInfo including the server-assigned transaction-time pair.
@@ -256,11 +292,82 @@ message VectorChunk {
 // same (EnterpriseId, AgentInstanceId) slice. Edges carry an optional bi-temporal
 // validity window (see GraphEdge.valid_at/invalid_at); a plain write with neither
 // field set records an always-current fact. Replacing a fact while preserving
-// history is the caller-driven MemoryService.SupersedeEdge operation, not a plain
-// re-write (a re-write of the same edge_id is an idempotent upsert, not a close).
+// history is the caller-driven supersession operation (CommitMemoryRequest's
+// `supersessions` section, or the standalone MemoryService.SupersedeEdge), not a
+// plain re-write (a re-write of the same edge_id is an idempotent upsert, not a
+// close).
 message GraphWrite {
   repeated GraphNode nodes = 1;
   repeated GraphEdge edges = 2;
+}
+
+// The supersession section of one commit: facts being retired, each with the
+// replacement that takes over from it. Two lists rather than one ordered list
+// because supersessions carry no ordering semantics against each other: every
+// one of them is applied in the same transaction, at the same commit timestamp.
+//
+// An id named here MUST NOT also appear in a write section of the same commit.
+// A request that both replaces an item's content and retires that item has not
+// said which it means, so it is rejected with INVALID_ARGUMENT rather than
+// resolved by a precedence rule, the same treatment a request naming two
+// different scopes gets, for the same reason.
+message SupersessionWrite {
+  repeated EdgeSupersession edges = 1;
+  repeated ChunkSupersession chunks = 2;
+}
+
+// One edge supersession: close `prior_edge_id`'s valid-time window at the
+// replacement's valid_at, and insert `new_edge` in the same slice. The prior edge
+// stays stored and queryable as history, with its own transaction-time start
+// preserved.
+//
+// An unknown `prior_edge_id` is NOT FOUND and aborts the WHOLE commit rather than
+// being skipped. A supersession names a specific assertion to retire; if that
+// assertion is not there, the caller's premise about the workspace is wrong, and
+// landing the replacement anyway would record a correction to something that was
+// never closed.
+message EdgeSupersession {
+  // The currently-held edge to close. Resolved within the caller's slice; an
+  // unknown id is NotFound (never a cross-slice touch).
+  string prior_edge_id = 1;
+
+  // The replacement fact, INSERTED in the same slice. new_edge.valid_at is
+  // REQUIRED: it is the supersession boundary (the prior edge's invalid_at and the
+  // new edge's valid_at) and must be a concrete, non-future timestamp.
+  // new_edge.edge_id must be set and differ from prior_edge_id; because the
+  // replacement is inserted rather than upserted, a reused id is rejected and the
+  // commit aborts. new_edge.invalid_at may be set to open the replacement already
+  // closed; its transaction-time is server-assigned. The updated_at field is
+  // ignored.
+  GraphEdge new_edge = 2;
+}
+
+// One chunk supersession: close `prior_chunk_id`'s valid-time window at the
+// replacement's valid_at, and insert `new_chunk` in the same slice. The prior
+// chunk stays stored with its CONTENT INTACT and readable as history: closing a
+// window writes the validity end and nothing else.
+//
+// An unknown `prior_chunk_id` aborts the whole commit, on the same terms as
+// EdgeSupersession.
+message ChunkSupersession {
+  // The currently-held chunk to close. Resolved within the caller's slice; an
+  // unknown id is NotFound (never a cross-slice touch).
+  string prior_chunk_id = 1;
+
+  // The replacement passage, INSERTED in the same slice. new_chunk.valid_at is
+  // REQUIRED: it is the supersession boundary (the prior chunk's invalid_at and
+  // the new chunk's valid_at) and must be a concrete, non-future timestamp.
+  // new_chunk.chunk_id must be set and differ from prior_chunk_id; because the
+  // replacement is inserted rather than upserted, a reused id is rejected and the
+  // commit aborts. It carries the same content, embedding, and metadata fields a
+  // committed chunk does, including server-side embedding generation when
+  // `embedding` is empty.
+  //
+  // A replacement whose server-generated embedding the model truncates is
+  // reported in CommitMemoryResponse.truncated_chunk_ids like any other chunk this
+  // commit writes, and (unlike the standalone SupersedeChunk RPC, whose request
+  // has no field for it) is subject to this commit's reject_on_truncation.
+  VectorChunk new_chunk = 2;
 }
 
 message GraphNode {
@@ -321,6 +428,11 @@ message GraphEdge {
 // memory type, so a caller can evidence exactly what the atomic step persisted.
 message CommitMemoryResponse {
   google.protobuf.Timestamp commit_timestamp = 1;
+
+  // Rows written by the WRITE sections (`log`, `vectors`, `graph`). These count
+  // what those sections wrote and nothing else; a supersession's effect is
+  // reported by the two counters below rather than folded in here, so their
+  // meaning is exactly what it was before the supersession section existed.
   int64 execution_log_rows = 2;
   int64 vector_rows = 3;
   int64 graph_node_rows = 4;
@@ -331,6 +443,9 @@ message CommitMemoryResponse {
   // but for each id listed here the tail of `raw_content` is not represented in
   // the stored vector and is therefore unreachable by semantic search: the
   // stored content is complete, the stored embedding is not.
+  //
+  // Covers every chunk this commit generated an embedding for, including a
+  // supersession's replacement passage.
   //
   // Ids rather than a flag or a count, so a caller knows exactly which chunk to
   // split and re-commit; a count cannot say that in a multi-chunk commit. Empty
@@ -346,6 +461,20 @@ message CommitMemoryResponse {
   // relies on the default can confirm which scope received the write rather than
   // inferring it.
   string scope_id = 7;
+
+  // Supersessions applied by this commit, counted as OPERATIONS rather than rows.
+  //
+  // Operations, because a supersession touches two rows asymmetrically (it
+  // inserts the replacement and closes the prior one's window), so a row count
+  // would have to pick a number that means something different from what every
+  // other counter here means. "Two facts were retired and replaced" is both what
+  // the caller asked for and what these report.
+  //
+  // Kept separate from graph_edge_rows and vector_rows for the same reason: a
+  // caller reading those counters before this section existed would otherwise see
+  // them start including work it never asked about.
+  int64 edge_supersessions = 8;
+  int64 chunk_supersessions = 9;
 }
 
 // ---------------------------------------------------------------------------
