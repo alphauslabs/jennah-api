@@ -1268,6 +1268,13 @@ message FormMemoryRequest {
   //
   // Scoped to the workspace. Unset means no protection: the platform cannot tell
   // a resend from a second conversation that happened to be identical.
+  //
+  // A RESEND IS NOT MARKED AS ONE, on the same terms DataService.CommitData does
+  // not mark one: a resend asks "was my intent carried out", the answer is yes,
+  // and the receipt is the evidence. Whether a given response was produced by
+  // doing the work or by reading the record is a fact about the platform's
+  // plumbing, not about the caller's memory, and the memory a replayed receipt
+  // describes is exactly as durable and exactly as explained either way.
   string formation_key = 3;
 }
 
@@ -1406,12 +1413,4 @@ message FormMemoryResponse {
   // The scope this formation wrote to, echoed for the same reason CommitMemory
   // echoes it.
   string scope_id = 12;
-
-  // True when this receipt is a REPLAY: the request carried a formation_key that
-  // had already been used, so this is the earlier call's stored receipt and no
-  // extraction ran. It is the one field that differs from what the first call
-  // returned, and it exists because the rest of the receipt cannot say it. A
-  // caller comparing two responses would otherwise have to wonder whether the
-  // model happened to decide identically twice.
-  bool replayed = 13;
 }
