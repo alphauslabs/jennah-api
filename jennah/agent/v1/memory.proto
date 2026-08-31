@@ -1356,6 +1356,26 @@ message FormedCandidate {
   // (an invalid metadata key, an unusable identifier, a revision that could not
   // preserve history), never as a sanitized value that was written instead.
   string rejection_reason = 9;
+
+  // True when this candidate's `text` RETAINS a structure from the conversation (a
+  // table, a fenced block) rather than describing one, so the individual entries
+  // stay readable in what was stored and an ordinary semantic query can return
+  // them.
+  //
+  // It is the platform's finding, not the extractor's claim. A model asserting
+  // preservation is believed only when the turn it names is one the platform
+  // itself judged structure-bearing AND the stored text really does contain a
+  // structure; a claim failing either check produces an ordinary candidate with
+  // this field false, and the turn is then listed in
+  // FormMemoryResponse.summarized_structures. False on almost every candidate,
+  // which is the intended state: preservation gives back the compression formation
+  // exists to provide, so it fires only where summarising would discard entries.
+  bool preserves_structure = 10;
+
+  // Index into FormMemoryRequest.turns of the turn the preserved structure came
+  // from. Meaningful only with `preserves_structure` true, and 0 otherwise, so read
+  // the boolean first.
+  int32 source_turn = 11;
 }
 
 // One masking the egress scrubber applied to a submitted turn before that turn
@@ -1372,6 +1392,52 @@ message RedactionRecord {
   // How many replacements the scrubber made in that turn. The scrubber reports a
   // count and not what it matched, so this receipt does not claim to either.
   int32 masked_count = 2;
+}
+
+// One structure-bearing passage the platform recognised in a submitted turn and
+// that no stored candidate preserved: its entries were summarised away, and are
+// NOT retrievable from the memory this formation wrote.
+//
+// SHAPED AFTER RedactionRecord DELIBERATELY. Same fields, same reason for
+// existing, same expectation that the list is usually empty: both report something
+// the platform did to a caller's content that the caller cannot otherwise see, and
+// both name the turn it happened to rather than trying to quote it back.
+//
+// It is NOT an error, and a formation that reports one still succeeded. The fact
+// the model wrote about the structure is stored and is ordinary memory; what this
+// says is that a question about a specific ROW of it will not be answerable from
+// what was stored, so a caller who needs that should submit the content through
+// CommitMemory, where they choose the chunking themselves.
+//
+// WHAT IT CANNOT TELL YOU: only structures the platform RECOGNISED are listed.
+// Recognition is deliberately narrow (markdown pipe tables and fenced blocks), so
+// a schedule written as prose, or one arriving in a tool trace, is summarised
+// exactly as it was before this field existed and appears nowhere here. An empty
+// list means nothing recognised was lost, not that nothing was lost.
+message SummarizedStructure {
+  // Index into FormMemoryRequest.turns of the turn the structure was found in.
+  int32 turn_index = 1;
+
+  // What that turn held, for a person reading a receipt: "1 table",
+  // "2 code blocks", "1 table and 1 code block". Prose rather than an enum and a
+  // count, because this field exists to be read by whoever is deciding whether to
+  // resubmit the content, and a machine that wants to branch on it only needs to
+  // know the list is non-empty.
+  //
+  // It describes EVERYTHING the turn held, not only what was lost. Read it with
+  // `summarized_count`.
+  string description = 2;
+
+  // How many of that turn's structures no stored candidate preserved.
+  //
+  // A COUNT AND NOT AN IDENTIFICATION, and the difference is a limit worth being
+  // plain about. A candidate records the TURN it preserved from, so in a turn
+  // holding three tables of which one was preserved, the platform knows two were
+  // lost and does not know which two. Naming one would be inventing precision the
+  // receipt does not have. The turn a caller submitted is the unit they can act on
+  // anyway: resubmitting it through CommitMemory stores all three, chunked the way
+  // they chose.
+  int32 summarized_count = 3;
 }
 
 // The formation receipt: what was extracted, what was decided, and what the
@@ -1413,4 +1479,20 @@ message FormMemoryResponse {
   // The scope this formation wrote to, echoed for the same reason CommitMemory
   // echoes it.
   string scope_id = 12;
+
+  // Structures the platform saw in the submitted turns and that no stored
+  // candidate preserved. Usually empty.
+  //
+  // THIS IS THE HALF OF THE RECEIPT `candidates` CANNOT CARRY. A candidate marked
+  // `preserves_structure` says what a stored fact kept; nothing in that list can
+  // say anything about a table that produced no candidate at all, or that produced
+  // only a description of itself. A caller who submitted a schedule and read back
+  // two stored facts had no way to learn the schedule was not one of them.
+  //
+  // COMPUTED BY SUBTRACTION, never from the model reporting its own omission.
+  // The platform scans each turn for structures before the model is called, and a
+  // structure in a turn that no verified preserving candidate came from is listed
+  // here. Asking an extractor to volunteer what it failed to keep is asking a model
+  // to notice its own absence, which is the least reliable thing a model does.
+  repeated SummarizedStructure summarized_structures = 13;
 }
