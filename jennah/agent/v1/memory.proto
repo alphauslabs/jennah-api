@@ -1371,11 +1371,6 @@ message FormedCandidate {
   // which is the intended state: preservation gives back the compression formation
   // exists to provide, so it fires only where summarising would discard entries.
   bool preserves_structure = 10;
-
-  // Index into FormMemoryRequest.turns of the turn the preserved structure came
-  // from. Meaningful only with `preserves_structure` true, and 0 otherwise, so read
-  // the boolean first.
-  int32 source_turn = 11;
 }
 
 // One masking the egress scrubber applied to a submitted turn before that turn
