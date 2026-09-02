@@ -683,6 +683,75 @@ message SemanticQuery {
   // omitted or widened.
   google.protobuf.Timestamp as_of_valid = 5;
   google.protobuf.Timestamp as_of_tx = 6;
+
+  // Which retrieval channels this section runs (add-hybrid-retrieval). Absent means
+  // RETRIEVAL_MODE_VECTOR_ONLY, so a caller that does not set it observes the
+  // ranking, the results and the latency it observed before hybrid retrieval
+  // existed.
+  //
+  // RETRIEVAL_MODE_HYBRID REQUIRES query_text, and is rejected with
+  // INVALID_ARGUMENT when only `embedding` is supplied. The lexical channel matches
+  // WORDS, and the query text cannot be recovered from a vector, so there is nothing
+  // for it to search. The request is refused rather than quietly served as
+  // vector-only, which would hand a plain result to a caller who asked for a better
+  // one with no way to tell the difference.
+  //
+  // Hybrid also requires the workspace's enterprise to have the lexical channel
+  // enabled and its stored chunks fully indexed. Where that is not yet true the
+  // request is refused rather than answered from a partial index, because a lexical
+  // channel ranking over part of a slice returns fewer results than the slice holds
+  // without saying so.
+  RetrievalMode retrieval_mode = 7;
+
+  // Reorder the fused candidate set with an external reranking model
+  // (add-hybrid-retrieval). Absent means off, and off is the default because
+  // reranking adds a model round-trip and therefore moves this section into a
+  // different LATENCY CLASS, not because the result is worse without it.
+  //
+  // Reranking resolves within the workspace's own data-plane region, on the same
+  // rule every other external inference follows. A region with no configured
+  // reranking endpoint refuses the request rather than sending the workspace's
+  // content elsewhere, and a request that opts in where reranking cannot be
+  // performed is refused rather than served unreranked: a caller who asked for a
+  // quality guarantee and received a plain fused result has no way to know.
+  bool rerank = 8;
+}
+
+// Which retrieval channels the semantic section runs (add-hybrid-retrieval).
+//
+// UNSPECIFIED is treated as VECTOR_ONLY, following FusionDirection above: the
+// default must be what the platform did before this capability existed, so an old
+// client, an unset field and a client that has never heard of hybrid retrieval all
+// behave identically.
+//
+// Changing that default is a separate, separately reviewable step justified by
+// measured retrieval quality on a fixed corpus, not a consequence of hybrid
+// retrieval shipping.
+enum RetrievalMode {
+  RETRIEVAL_MODE_UNSPECIFIED = 0; // treated as VECTOR_ONLY
+  // Rank by exact cosine distance over the caller's slice. The default, and what
+  // the semantic section has always done.
+  RETRIEVAL_MODE_VECTOR_ONLY = 1;
+  // Run the vector and lexical channels over one read snapshot and fuse them by
+  // RANK (Reciprocal Rank Fusion), not by combining their scores: a cosine distance
+  // and a lexical relevance score are on incomparable scales whose distributions
+  // vary by workspace and by query.
+  RETRIEVAL_MODE_HYBRID = 2;
+}
+
+// A retrieval channel that found a match (add-hybrid-retrieval).
+//
+// NOT related to FusionDirection or FusedResult, which are about linking the
+// semantic and GRAPH sections. This is fusion across retrieval channels WITHIN the
+// semantic section, and the two mechanisms are independent.
+enum RetrievalChannel {
+  RETRIEVAL_CHANNEL_UNSPECIFIED = 0;
+  // Found by vector similarity: what the chunk is ABOUT.
+  RETRIEVAL_CHANNEL_VECTOR = 1;
+  // Found by whole-word term match: the WORDS the chunk contains. This is the
+  // channel that recalls rare identifiers, error codes and proper nouns, which
+  // embeddings place poorly.
+  RETRIEVAL_CHANNEL_LEXICAL = 2;
 }
 
 // One predicate over an ITEM's metadata — a vector chunk, a graph node, a graph
@@ -864,6 +933,44 @@ message SemanticMatch {
   // depends on how the query was shaped. Chunk ids are unique within a scope,
   // not across scopes, so this is what makes a fused ranking attributable.
   string scope_id = 5;
+
+  // Which channel or channels found this chunk (add-hybrid-retrieval), so a caller
+  // can tell WHY it was recalled: for what it means, for the words it contains, or
+  // both. Always populated, and always exactly [RETRIEVAL_CHANNEL_VECTOR] in the
+  // default vector-only mode, and never empty, so a caller reading this field never has
+  // to distinguish "the vector channel found it" from "this server predates
+  // provenance".
+  //
+  // Two channels agreeing is the interesting case and the reason this is a LIST
+  // rather than a single value: agreement between two independent retrieval
+  // strategies is a stronger signal than either alone.
+  repeated RetrievalChannel channels = 6;
+
+  // Spanner's whole-word relevance score, set only when `channels` includes
+  // RETRIEVAL_CHANNEL_LEXICAL and 0 otherwise. Higher is more relevant, OPPOSITE to
+  // `distance`.
+  //
+  // It is reported for interpretability and is NOT what fusion ranks on. Its
+  // absolute value is never compared against `distance` (the two are on
+  // incomparable scales), and the underlying scoring algorithm is versioned and
+  // improved over time, so a client should not persist it or compare it across
+  // requests.
+  double lexical_score = 7;
+
+  // The Reciprocal Rank Fusion score that produced this result's position, set only
+  // in RETRIEVAL_MODE_HYBRID and 0 otherwise (in vector-only mode the ranking IS the
+  // cosine ordering, and there is nothing fused to report).
+  //
+  // NAMED rrf_score AND NOT fused_score DELIBERATELY. `FusedResult` and
+  // `FusionDirection` in this same file mean vector+graph SECTION linkage, which is
+  // an unrelated mechanism; a field called `fused_score` here would read as belonging
+  // to that one. This is fusion across retrieval CHANNELS.
+  //
+  // It is the sum over channels of 1/(k + rank_in_that_channel) for a fixed k, so a
+  // chunk found by both channels accumulates two terms. Ranks, not scores, are
+  // combined: that needs no normalization and no per-corpus weight, and it is
+  // deterministic: identical inputs produce an identical ordering.
+  double rrf_score = 8;
 }
 
 // Graph traversal result rows. Each row carries the matched elements' key
