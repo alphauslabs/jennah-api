@@ -703,17 +703,29 @@ message SemanticQuery {
   // without saying so.
   RetrievalMode retrieval_mode = 7;
 
-  // Reorder the fused candidate set with an external reranking model
-  // (add-hybrid-retrieval). Absent means off, and off is the default because
+  // Reorder this section's candidate set with an external reranking model
+  // (add-retrieval-reranking). Absent means off, and off is the default because
   // reranking adds a model round-trip and therefore moves this section into a
   // different LATENCY CLASS, not because the result is worse without it.
+  //
+  // It applies to WHATEVER candidate set the section produced, from the vector
+  // channel alone or from both channels fused. Reranking is not conditional on
+  // hybrid mode: a caller running vector-only and asking for reranking is asking a
+  // coherent question and gets a coherent answer.
+  //
+  // The candidate set reranked is retrieved WIDER than `limit`, and the reranked
+  // top `limit` is what comes back. That is where the stage earns anything:
+  // reordering only the results the caller would already have received cannot
+  // change which chunks they see, just the order. How much wider is the platform's
+  // constant, not a caller knob, because its right value is a property of the
+  // retrieval path rather than of any one request.
   //
   // Reranking resolves within the workspace's own data-plane region, on the same
   // rule every other external inference follows. A region with no configured
   // reranking endpoint refuses the request rather than sending the workspace's
   // content elsewhere, and a request that opts in where reranking cannot be
   // performed is refused rather than served unreranked: a caller who asked for a
-  // quality guarantee and received a plain fused result has no way to know.
+  // quality guarantee and received an ordinary ranking has no way to know.
   bool rerank = 8;
 }
 
@@ -971,6 +983,37 @@ message SemanticMatch {
   // combined: that needs no normalization and no per-corpus weight, and it is
   // deterministic: identical inputs produce an identical ordering.
   double rrf_score = 8;
+
+  // The reranking model's relevance score for this chunk against the query, set
+  // only when the request asked for reranking and 0 otherwise. Higher is more
+  // relevant, OPPOSITE to `distance`.
+  //
+  // Reported for interpretability on the same terms as `lexical_score`: it is what
+  // ORDERED this result, but its absolute value is on the reranker's own scale and
+  // is comparable neither to `distance` nor to `rrf_score`. The model behind it is
+  // versioned and improved over time, so a client should not persist it or compare
+  // it across requests.
+  //
+  // Reranking reorders a candidate set retrieved WIDER than the caller's limit, so
+  // a chunk carrying a score here may be one the unreranked ranking would not have
+  // returned at all. That is the stage's entire purpose rather than a side effect.
+  double rerank_score = 9;
+
+  // Whether this chunk's content was truncated to fit the reranking model's
+  // per-record token limit, meaning the score above was computed on a PREFIX of the
+  // `raw_content` returned beside it.
+  //
+  // Reported rather than left silent, and that is the same rule this section
+  // already applies to reranking as a whole. A request that cannot be reranked is
+  // refused rather than served unreranked, because an unreranked result is
+  // indistinguishable from a reranked one and the caller would be told something
+  // untrue with no way to discover it. A result ranked on its first N tokens is that
+  // defect in miniature, and this field is what makes it distinguishable instead.
+  //
+  // Truncation here says nothing about what is STORED or what is returned: the whole
+  // chunk was indexed, and the whole chunk is in `raw_content`. It bounds only how
+  // much of it the reranker saw. False whenever reranking did not run.
+  bool rerank_truncated = 10;
 }
 
 // Graph traversal result rows. Each row carries the matched elements' key
