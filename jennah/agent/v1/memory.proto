@@ -275,7 +275,7 @@ message ExecutionLogStep {
   // match `[A-Za-z0-9_.-]{1,128}`, at most 32 per step, values are opaque strings.
   // Filter on them with LogQuery.metadata.
   //
-  // A step is APPEND-ONLY — reusing a step_id is a conflict, not a replace — so
+  // A step is APPEND-ONLY (reusing a step_id is a conflict, not a replace), so
   // unlike a chunk's or a node's, a step's metadata is written once and cannot be
   // rewritten. That follows from the step's own write semantics, not from a
   // different metadata rule.
@@ -435,7 +435,7 @@ message GraphNode {
   // node's PAYLOAD: arbitrary nested JSON, stored and returned, never filterable.
   // Metadata is its filterable INDEX: flat strings that a query can narrow on
   // (GraphNodeMatch.metadata). The one-line rule is "if you want to filter on it,
-  // it is metadata; if it is data the node carries, it is properties" — and
+  // it is metadata; if it is data the node carries, it is properties". And
   // putting the same value in both is legitimate and expected, because a flat
   // filterable copy of a nested payload field is exactly what an index is.
   //
@@ -466,7 +466,7 @@ message GraphEdge {
   google.protobuf.Timestamp invalid_at = 8;
 
   // Optional caller-supplied tags on this edge, on exactly the terms
-  // GraphNode.metadata describes — including the payload-versus-index division
+  // GraphNode.metadata describes, including the payload-versus-index division
   // against `properties`. Filter on them with GraphStep.metadata.
   map<string, string> metadata = 9;
 }
@@ -766,7 +766,7 @@ enum RetrievalChannel {
   RETRIEVAL_CHANNEL_LEXICAL = 2;
 }
 
-// One predicate over an ITEM's metadata — a vector chunk, a graph node, a graph
+// One predicate over an ITEM's metadata: a vector chunk, a graph node, a graph
 // edge, or an execution-log step. It is the same message in every section that
 // accepts a filter (SemanticQuery.filters, GraphNodeMatch.metadata,
 // GraphStep.metadata, LogQuery.metadata) with the same semantics, so a caller
@@ -865,7 +865,7 @@ message GraphStep {
   GraphNodeMatch node = 3; // constraints on the node reached by this hop
 
   // Optional metadata filters on the EDGE this hop traverses (not on the node it
-  // reaches — that is `node.metadata`). Same message, same semantics, and applied
+  // reaches, which is `node.metadata`). Same message, same semantics, and applied
   // to the edge element before the hop is taken.
   repeated MetadataFilter metadata = 4;
 }
@@ -1014,6 +1014,22 @@ message SemanticMatch {
   // chunk was indexed, and the whole chunk is in `raw_content`. It bounds only how
   // much of it the reranker saw. False whenever reranking did not run.
   bool rerank_truncated = 10;
+
+  // The chunk's VALID-TIME start: when the passage's content began to hold. Absent
+  // when the chunk has none recorded, which is a real state rather than a defaulted
+  // one: every chunk written before valid-time was recorded has no value here and
+  // none can be backfilled, so absent means "valid since the beginning of time" and
+  // MUST NOT be read as a zero timestamp.
+  //
+  // Additive: ranking, limit behaviour and every other field are unchanged, and a
+  // client that ignores this sees exactly what it saw before.
+  //
+  // It is reported so a layer above the platform can compare WHEN a recalled
+  // passage became valid against when a new statement was made, through the
+  // ordinary clamped query path rather than a privileged read. Memory formation is
+  // the first such caller: it is how a revision knows it is not retiring something
+  // newer than the conversation it came from.
+  google.protobuf.Timestamp valid_at = 11;
 }
 
 // Graph traversal result rows. Each row carries the matched elements' key
@@ -1426,6 +1442,35 @@ message FormMemoryRequest {
   // plumbing, not about the caller's memory, and the memory a replayed receipt
   // describes is exactly as durable and exactly as explained either way.
   string formation_key = 3;
+
+  // WHEN THIS CONVERSATION TOOK PLACE, which is not necessarily when it is being
+  // formed. Optional; absent means the instant the formation is received, which is
+  // what the platform assumed before this field existed.
+  //
+  // It is the VALID-TIME start of every fact and relationship this formation
+  // writes, and the boundary of every revision it makes (the prior assertion's
+  // valid-time end and its replacement's start). So memory formed from a
+  // conversation that happened in the past is valid FROM WHEN IT HAPPENED rather
+  // than from when it was ingested, and valid-time travel over formed memory means
+  // something for a backfill or an import.
+  //
+  // It is also what lets reconciliation order two contradicting statements. A
+  // revision retires an existing assertion, and deciding that one statement
+  // REPLACES another requires knowing which is the later one. Reconciliation is
+  // shown this instant and each recalled memory's valid-time start, and a revision
+  // that would retire a memory which became valid AFTER this conversation is
+  // refused: a conversation recounting history ("I used to live in Osaka before
+  // moving here") states an OLDER fact, and treating it as a revision would retire
+  // the current one. That candidate is reported rejected rather than written.
+  //
+  // Part of what makes two requests identical for `formation_key`: a resend under
+  // the same key with a different instant describes memory valid from a different
+  // time, so it is a key reuse and not a retry.
+  //
+  // NOT clamped against the wall clock. `memory:commit` lets a caller set any
+  // valid-time and the platform does not second-guess it there; a future instant
+  // makes a fact valid from the future, which is the caller's statement to make.
+  google.protobuf.Timestamp observed_at = 4;
 }
 
 // What kind of memory a candidate is.
