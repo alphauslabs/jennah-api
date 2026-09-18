@@ -199,6 +199,59 @@ service AuthService {
     };
   }
 
+  // --- Memory vocabulary (external/gateway RPCs; authenticated) ---
+
+  // Declares the memory vocabulary for the caller's active enterprise, or for one
+  // scope in it. External (gateway) RPC. Authenticated AND requires the
+  // "settings.enterprise:update" permission, which is management-class: a
+  // key-authenticated caller acting as an agent CANNOT declare a vocabulary at
+  // either level, so an agent cannot alter the vocabulary governing its own
+  // memory.
+  //
+  // REPLACES the vocabulary previously declared at that level in its entirety. It
+  // does not merge, so a class or relation type is removed by omitting it and the
+  // effective declaration is always readable from one document.
+  //
+  // `vocabulary` is REQUIRED even when empty, and this is deliberate. A
+  // declaration carrying no classes is an EMPTY declaration that turns
+  // classification off at that level; it is NOT a removal, which is its own RPC.
+  // Leaving the field unset is rejected rather than treated as either one, because
+  // a client that builds its request incrementally and forgets to set it would
+  // otherwise silently destroy the vocabulary it meant to leave alone.
+  rpc DeclareMemoryVocabulary(DeclareMemoryVocabularyRequest) returns (DeclareMemoryVocabularyResponse) {
+    option (google.api.http) = {
+      put: "/v1/org/memory-vocabulary"
+      body: "*"
+    };
+  }
+
+  // Removes the memory vocabulary declared at one level. External (gateway) RPC.
+  // Authenticated AND requires the "settings.enterprise:update" permission
+  // (management-class, as DeclareMemoryVocabulary).
+  //
+  // Removing a SCOPE-level declaration restores inheritance: that scope resolves
+  // its enterprise's vocabulary again. This is a DIFFERENT outcome from declaring
+  // an empty vocabulary for it, which resolves nothing. Removing the
+  // ENTERPRISE-level declaration leaves no vocabulary at that level.
+  //
+  // Removes no memory. Every entity already written keeps the class it was given,
+  // and no stored row is changed.
+  rpc RemoveMemoryVocabulary(RemoveMemoryVocabularyRequest) returns (RemoveMemoryVocabularyResponse) {
+    option (google.api.http) = {delete: "/v1/org/memory-vocabulary"};
+  }
+
+  // Reads the memory vocabulary for one level. External (gateway) RPC.
+  // Authenticated AND requires the "settings.enterprise:read" permission, which is
+  // NOT management-class: reading what classifies a scope's memory is not the same
+  // act as changing it.
+  //
+  // Returns TWO answers, because one cannot express the difference: the
+  // declaration AT the level asked about, and the vocabulary that RESOLVES for it.
+  // See GetMemoryVocabularyResponse.
+  rpc GetMemoryVocabulary(GetMemoryVocabularyRequest) returns (GetMemoryVocabularyResponse) {
+    option (google.api.http) = {get: "/v1/org/memory-vocabulary"};
+  }
+
   // --- RBAC roles & permissions (external/gateway RPCs; authenticated) ---
 
   // Lists the fixed permission catalog: every grantable "group.resource:action"
@@ -783,6 +836,150 @@ message UpdateEnterpriseRequest {
 // Response message for the AuthService.UpdateEnterprise rpc.
 message UpdateEnterpriseResponse {
   Enterprise enterprise = 1; // the updated enterprise
+}
+
+// One entity class in a memory vocabulary: a kind of thing memory formation may
+// classify an entity as.
+//
+// `description` is NOT documentation. It is supplied to the extraction model
+// beside the name and is the primary signal separating classes whose names do not
+// speak for themselves: `Person`, `Contact`, and `Party` are indistinguishable to
+// a model given only their names, and a vocabulary of bare labels misclassifies
+// for reasons invisible in the declaration. A vocabulary declared without
+// descriptions is accepted and classifies on names alone.
+//
+// Descriptions are also by far the largest part of a rendered vocabulary, so the
+// description bound rather than the class count is what bounds the prompt cost.
+message EntityClass {
+  // Constrained to a documented character set, so a name can never alter the
+  // structure of the rendered vocabulary, for the same reason a metadata key is
+  // constrained so it can never alter the structure of a query.
+  string name = 1;
+  string description = 2; // optional; supplied to classification, length-bounded
+}
+
+// One `(source class, target class)` pair a relation type is expected to hold
+// between. ADVISORY: nothing validates an extracted relationship against it.
+//
+// The naming follows schema.org's deliberate `domainIncludes` / `rangeIncludes`
+// rather than RDFS `domain` / `range`. Strict domain and range do not constrain a
+// graph, they INFER over it: asserting `x WORKS_AT y` where `WORKS_AT` has domain
+// `Person` makes `x` a `Person` whether or not that was true. These are expected
+// signatures and entail nothing.
+message RelationSignature {
+  string source_class = 1; // must name an EntityClass in the same declaration
+  string target_class = 2; // must name an EntityClass in the same declaration
+}
+
+// One relation type in a memory vocabulary, with the signatures it is expected to
+// hold between.
+//
+// Relation types are ADVISORY, unlike entity classes. Extraction receives them as
+// guidance and may still emit a relationship whose type matches none of them; that
+// relationship is written exactly as extracted, never rejected, retyped, or
+// dropped.
+//
+// The asymmetry with EntityClass is deliberate. An entity that fits no declared
+// class has a correct outcome available, which is to be left unclassified. A
+// relationship that fits no declared type has none, so a closed set would discard
+// a fact the conversation actually supported, and a lost memory costs more than an
+// untidy one.
+message RelationType {
+  string name = 1; // same character-set constraint as EntityClass.name
+  string description = 2; // optional; supplied to extraction as guidance
+  repeated RelationSignature signatures = 3; // optional; advisory, validated nowhere
+}
+
+// A memory vocabulary: the entity classes formed memory is classified against and
+// the relation types it is expected to use.
+//
+// A vocabulary steers what memory FORMATION generates. It never gates what the
+// platform accepts and never narrows what a query may ask for: no commit is
+// refused for an off-vocabulary class, no candidate is dropped for one, and no
+// query filter is validated against one.
+//
+// Bounded on every axis (class count, relation-type count, signatures per relation
+// type, name length, description length). The bounds exist because the resolved
+// vocabulary is supplied to the extraction model on EVERY formation, so an
+// unbounded vocabulary is an unbounded cost on an operation that is metered as
+// inference-bearing and bounded by a per-region model-call deadline. They are NOT
+// storage limits and should not be raised on the reasoning that storage is cheap.
+//
+// A vocabulary carrying no entity classes is EMPTY, which is a meaningful state
+// (classification off) and not the same as no vocabulary at all.
+message MemoryVocabulary {
+  repeated EntityClass entity_classes = 1;
+  repeated RelationType relation_types = 2;
+}
+
+// Request message for the AuthService.DeclareMemoryVocabulary rpc.
+message DeclareMemoryVocabularyRequest {
+  // Empty targets the ENTERPRISE level, where the vocabulary is the default for
+  // every scope in the caller's active enterprise. Non-empty targets that one
+  // scope, where the vocabulary REPLACES the enterprise default for it alone.
+  //
+  // Agent scopes and subject scopes share one identifier space, so this addresses
+  // both kinds by the same mechanism, and a vocabulary applies to each identically.
+  // A scope id naming a real scope is non-empty by construction, so empty cannot
+  // collide with one. An unknown scope id is NOT_FOUND.
+  string scope_id = 1;
+
+  // REQUIRED, including when it carries no classes. Unset is rejected with
+  // INVALID_ARGUMENT rather than being read as an empty declaration or as a
+  // removal: see the rpc comment for why omission must not be able to destroy a
+  // vocabulary.
+  MemoryVocabulary vocabulary = 2;
+}
+
+// Response message for the AuthService.DeclareMemoryVocabulary rpc.
+message DeclareMemoryVocabularyResponse {
+  // The vocabulary now declared at the targeted level, echoed back exactly as it
+  // was stored, so a client can confirm what it wrote without a second call.
+  MemoryVocabulary vocabulary = 1;
+}
+
+// Request message for the AuthService.RemoveMemoryVocabulary rpc.
+message RemoveMemoryVocabularyRequest {
+  string scope_id = 1; // empty = the enterprise-level declaration; see DeclareMemoryVocabularyRequest
+}
+
+// Response message for the AuthService.RemoveMemoryVocabulary rpc.
+message RemoveMemoryVocabularyResponse {}
+
+// Request message for the AuthService.GetMemoryVocabulary rpc.
+message GetMemoryVocabularyRequest {
+  string scope_id = 1; // empty = the enterprise level; see DeclareMemoryVocabularyRequest
+}
+
+// Response message for the AuthService.GetMemoryVocabulary rpc.
+//
+// Reports the declaration and the resolution SEPARATELY, because one field cannot
+// carry both and the difference is the thing a caller most needs. A scope that
+// declares nothing and inherits its enterprise's vocabulary, and a scope that
+// declares an empty one and therefore classifies nothing, are different states
+// that a single vocabulary field would render identically.
+message GetMemoryVocabularyResponse {
+  // The declaration AT the level asked about. Its PRESENCE carries the
+  // absent-versus-empty distinction, which is why it is a message rather than a
+  // bare repeated field:
+  //
+  //   unset                  -> no declaration at this level
+  //   set, classes non-empty -> that declaration
+  //   set, classes empty     -> an EMPTY declaration (classification off here)
+  //
+  // A bare `repeated EntityClass` could not express the first two rows apart, and
+  // `optional` on a proto3 scalar is not an option this shape can reach for.
+  MemoryVocabulary declaration = 1;
+
+  // The vocabulary that RESOLVES for the level asked about, which is what
+  // formation actually uses. Unset means none resolves and formation there
+  // classifies nothing.
+  //
+  // For a scope: its own declaration when it has a non-empty one; nothing when it
+  // declares an empty one; otherwise the enterprise declaration, which may itself
+  // be absent. A scope-level vocabulary REPLACES the enterprise one outright, so
+  // this is never a merge of the two.
+  MemoryVocabulary resolved = 2;
 }
 
 // A single entry in the RBAC permission catalog. `id` is the canonical
