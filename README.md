@@ -1,5 +1,7 @@
 [![main](https://github.com/alphauslabs/jennah-api/actions/workflows/main.yml/badge.svg)](https://github.com/alphauslabs/jennah-api/actions/workflows/main.yml)
 
+## jennah-api
+
 You need to install the following tools to build locally:
 
 * The [protoc](https://grpc.io/docs/protoc-installation/) compiler.
