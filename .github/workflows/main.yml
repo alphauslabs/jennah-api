@@ -38,7 +38,7 @@ jobs:
         path: generated/
 
   verify:
-    name: Verify ${{ matrix.lang }}
+    name: Verify ${{ matrix.name }}
     needs: generate
     runs-on: ubuntu-latest
     strategy:
@@ -46,8 +46,13 @@ jobs:
       fail-fast: false
       matrix:
         # Adding a language is an entry here plus ci/<lang>/verify.sh and
-        # ci/<lang>/publish.sh.
-        lang: [go, python]
+        # ci/<lang>/publish.sh. `lang` names paths and artifacts; `name` is
+        # only what the job is called.
+        include:
+        - lang: go
+          name: Go
+        - lang: python
+          name: Python
     steps:
     - uses: actions/checkout@v6
 
