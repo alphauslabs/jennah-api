@@ -17,3 +17,16 @@ plugins:
       - naming=proto
       - fq_schema_naming=true
       - enum_type=string
+  # Python (jennah-sdk-py). Remote plugins, pinned: the protobuf gencode version
+  # must not exceed the protobuf runtime jennah-sdk-py declares, so bump these
+  # together with its pyproject.toml. include_imports pulls in gnostic, which has
+  # no PyPI package; google/api is also emitted but the SDK takes it from
+  # googleapis-common-protos instead (see ci/python/verify.sh).
+  - remote: buf.build/protocolbuffers/python:v29.3
+    out: generated/python
+    include_imports: true
+  - remote: buf.build/protocolbuffers/pyi:v29.3
+    out: generated/python
+    include_imports: true
+  - remote: buf.build/grpc/python:v1.70.0
+    out: generated/python

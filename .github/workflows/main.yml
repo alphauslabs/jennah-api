@@ -1,11 +1,20 @@
 ---
 name: main
 
-on: [push, pull_request]
+# Every push and pull request generates and verifies every SDK. Only a version
+# tag (v*) publishes, and it publishes every language at that version or none:
+# publish runs only after verify has passed for every language. See
+# ci/README.md.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
 
 jobs:
-  build:
-    name: Build
+  generate:
+    name: Generate
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
@@ -14,27 +23,113 @@ jobs:
       with:
         go-version: '1.26'
 
-    - name: 'Build all'
-      env:
-        DEPLOYER_TOKEN: ${{secrets.GH_TOKEN}}
+    - name: Generate all languages
       run: |
         mkdir -p $HOME/.local/bin
         curl -LO https://github.com/bufbuild/buf/releases/download/v1.71.0/buf-Linux-x86_64.tar.gz
         tar xvzf buf-Linux-x86_64.tar.gz
         cp buf/bin/* $HOME/.local/bin/
-        export GO111MODULE=on
         export PATH="$PATH:$HOME/.local/bin:$(go env GOPATH)/bin"
-        # Start build:
         go install tool && buf dep update && buf generate
-        if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-          exit 0
-        fi
-        # Update jennah-sdk-go:
-        WORKSPACE_ROOT=$PWD
-        cd /tmp/ && git clone https://$DEPLOYER_TOKEN:@github.com/alphauslabs/jennah-sdk-go && cd jennah-sdk-go/
-        cp -rv $WORKSPACE_ROOT/generated/go/* . && git status
-        git config user.email "dev@mobingi.com"
-        git config user.name "mobingideployer"
-        git add . && git commit -am "$GITHUB_REF $GITHUB_SHA" || true
-        git remote add origin-tmp https://$DEPLOYER_TOKEN@github.com/alphauslabs/jennah-sdk-go.git > /dev/null 2>&1
-        git push --set-upstream origin-tmp
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: generated
+        path: generated/
+
+  verify:
+    name: Verify ${{ matrix.lang }}
+    needs: generate
+    runs-on: ubuntu-latest
+    strategy:
+      # Every language runs to completion, so one failing does not hide another.
+      fail-fast: false
+      matrix:
+        # Adding a language is an entry here plus ci/<lang>/verify.sh and
+        # ci/<lang>/publish.sh.
+        lang: [go, python]
+    steps:
+    - uses: actions/checkout@v6
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: generated
+        path: generated/
+
+    - uses: actions/setup-go@v6
+      with:
+        go-version: '1.26'
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Assemble, test and build
+      env:
+        DEPLOYER_TOKEN: ${{ secrets.GH_TOKEN }}
+        VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+      run: ci/${{ matrix.lang }}/verify.sh
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: sdk-${{ matrix.lang }}
+        path: out/
+
+  # The SDKs verify just tested, sharing one session file across two processes:
+  # a renewal in either language must leave the other authenticated.
+  crosslang:
+    name: Cross-language sessions
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: sdk-*
+        path: out/
+
+    - uses: actions/setup-go@v6
+      with:
+        go-version: '1.26'
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Run cross-language session tests
+      run: ci/crosslang/run.sh out/sdk-go/tree.tgz out/sdk-python/dist
+
+  publish:
+    name: Publish
+    if: github.ref_type == 'tag'
+    # needs on the whole matrix: this job does not start unless every language
+    # passed verify, and the languages passed together.
+    needs: [verify, crosslang]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # PyPI trusted publishing; no stored upload token
+    steps:
+    - uses: actions/checkout@v6
+
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: sdk-*
+        path: out/
+
+    # Order matters. A PyPI upload cannot be withdrawn and is the step most
+    # likely to be refused (name, version already used, publisher config), so
+    # it goes first. The Go push after it is idempotent: if it fails, re-running
+    # this job completes the release.
+    - name: Publish jennah-sdk-py to PyPI
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        packages-dir: out/sdk-python/dist/
+
+    - name: Publish jennah-sdk-go
+      env:
+        DEPLOYER_TOKEN: ${{ secrets.GH_TOKEN }}
+        VERSION: ${{ github.ref_name }}
+      run: ci/go/publish.sh out/sdk-go

@@ -29,4 +29,23 @@ Then run:
 $ buf format -w && buf dep update && buf generate
 ```
 
-CI build auto-updates the [jennah-sdk-go](https://github.com/alphauslabs/jennah-sdk-go) repo.
+CI generates and tests every SDK on each push. Pushing a `v*` tag here releases
+[jennah-sdk-go](https://github.com/alphauslabs/jennah-sdk-go) and
+[jennah-sdk-py](https://github.com/alphauslabs/jennah-sdk-py) together at that
+version; see [`ci/README.md`](ci/README.md).
+
+## Conformance suites
+
+[`conformance/`](conformance/README.md) holds language-independent cases every
+SDK must pass before it is released, starting with the shared credential
+contract. CI copies the directory into each SDK with the generated code, so an
+SDK always runs the cases from the revision its stubs came from.
+
+Two rules, both part of the release process rather than conventions:
+
+* **A new credential behavior enters the suite before it enters any SDK.** Land
+  the case here first, see it fail in every SDK that lacks the behavior, then
+  implement it. A change that adds credential behavior to an SDK with no case
+  already in this directory is not ready for review.
+* **A failing case is a defect in the SDK.** Fix the client. A case changes only
+  when the spec it cites changes.
