@@ -35,10 +35,10 @@ and re-push the `jennah-api` tag to release again from the new `main`.
 
 1. Add its plugins to `buf.gen.yaml`, writing to `generated/<lang>`.
 2. Add `<lang>` to the `verify` matrix in `main.yml`.
-3. Add `ci/<lang>/verify.sh`: clone the SDK, overlay `generated/<lang>` and
+3. Add `release/<lang>/verify.sh`: clone the SDK, overlay `generated/<lang>` and
    `conformance/`, test (the conformance harness included), and leave what
    publish needs in `out/`.
-4. Add its publish step to the `publish` job: `ci/<lang>/publish.sh`, or a
+4. Add its publish step to the `publish` job: `release/<lang>/publish.sh`, or a
    registry's own action.
 
 ## Cross-language session tests
@@ -50,7 +50,7 @@ other authenticated, renewals chain across languages, and concurrent reads and
 writes from both never see a torn file. Locally:
 
 ```bash
-ci/crosslang/run.sh ../jennah-sdk-go ../jennah-sdk-py   # an assembled checkout
+release/crosslang/run.sh ../jennah-sdk-go ../jennah-sdk-py   # an assembled checkout
 ```
 
 `jnh` is not in this job: it renews over the HTTP gateway and lives in another
@@ -71,7 +71,7 @@ Each script takes `SDK_REPO` to clone from a local checkout instead of GitHub:
 
 ```bash
 buf generate
-SDK_REPO=../jennah-sdk-go ci/go/verify.sh
+SDK_REPO=../jennah-sdk-go release/go/verify.sh
 ```
 
 `buf generate` now needs network access: the Python plugins are remote BSR

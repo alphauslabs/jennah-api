@@ -34,7 +34,7 @@ $ buf format -w && buf dep update && buf generate
 CI generates and tests every SDK on each push. Pushing a `v*` tag here releases
 [jennah-sdk-go](https://github.com/alphauslabs/jennah-sdk-go) and
 [jennah-sdk-py](https://github.com/alphauslabs/jennah-sdk-py) together at that
-version; see [`ci/README.md`](ci/README.md).
+version; see [`release/README.md`](release/README.md).
 
 ## Conformance suites
 

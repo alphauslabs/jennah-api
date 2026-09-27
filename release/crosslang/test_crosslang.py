@@ -6,7 +6,7 @@ clients, in two processes, sharing one stored session without stranding each
 other. Run by run.sh against the Go tree and Python distribution that verify
 just tested, so both halves are the code being released.
 
-Env: GOHELPER, the built ci/crosslang/gohelper binary.
+Env: GOHELPER, the built release/crosslang/gohelper binary.
 """
 
 from __future__ import annotations

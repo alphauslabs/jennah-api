@@ -4,7 +4,7 @@ name: main
 # Every push and pull request generates and verifies every SDK. Only a version
 # tag (v*) publishes, and it publishes every language at that version or none:
 # publish runs only after verify has passed for every language. See
-# ci/README.md.
+# release/README.md.
 
 on:
   push:
@@ -45,8 +45,8 @@ jobs:
       # Every language runs to completion, so one failing does not hide another.
       fail-fast: false
       matrix:
-        # Adding a language is an entry here plus ci/<lang>/verify.sh and
-        # ci/<lang>/publish.sh. `lang` names paths and artifacts; `name` is
+        # Adding a language is an entry here plus release/<lang>/verify.sh and
+        # release/<lang>/publish.sh. `lang` names paths and artifacts; `name` is
         # only what the job is called.
         include:
         - lang: go
@@ -73,7 +73,7 @@ jobs:
       env:
         DEPLOYER_TOKEN: ${{ secrets.GH_TOKEN }}
         VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-      run: ci/${{ matrix.lang }}/verify.sh
+      run: release/${{ matrix.lang }}/verify.sh
 
     - uses: actions/upload-artifact@v4
       with:
@@ -103,7 +103,7 @@ jobs:
         python-version: '3.12'
 
     - name: Run cross-language session tests
-      run: ci/crosslang/run.sh out/sdk-go/tree.tgz out/sdk-python/dist
+      run: release/crosslang/run.sh out/sdk-go/tree.tgz out/sdk-python/dist
 
   publish:
     name: Publish
@@ -137,4 +137,4 @@ jobs:
       env:
         DEPLOYER_TOKEN: ${{ secrets.GH_TOKEN }}
         VERSION: ${{ github.ref_name }}
-      run: ci/go/publish.sh out/sdk-go
+      run: release/go/publish.sh out/sdk-go

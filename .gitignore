@@ -8,7 +8,7 @@
 .vscode
 vendor/
 generated/
-# Python bytecode from running ci/crosslang locally
+# Python bytecode from running release/crosslang locally
 __pycache__/
-# Written by ci/*/verify.sh when run locally
+# Written by release/*/verify.sh when run locally
 out/

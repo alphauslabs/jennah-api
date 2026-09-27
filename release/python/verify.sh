@@ -22,7 +22,7 @@ if ! git clone --quiet "$REPO" "$WORK/sdk"; then
   exit 1
 fi
 git -C "$WORK/sdk" rev-parse HEAD >"$OUT/base"
-PYVER=$("$ROOT/ci/python/assemble.sh" "$WORK/sdk")
+PYVER=$("$ROOT/release/python/assemble.sh" "$WORK/sdk")
 cd "$WORK/sdk"
 
 python -m venv "$WORK/venv"

@@ -55,7 +55,7 @@ done
 rm -rf conformance && cp -r "$API/conformance" .
 
 cat >src/jennah/_version.py <<EOF
-# Written by jennah-api ci/python/assemble.sh; not committed.
+# Written by jennah-api release/python/assemble.sh; not committed.
 __version__ = "$PYVER"
 __source_commit__ = "$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 EOF
