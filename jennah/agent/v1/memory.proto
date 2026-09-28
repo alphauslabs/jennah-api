@@ -560,8 +560,9 @@ message GraphEdge {
   // always-current fact). invalid_at is when the fact ceased to be true; unset
   // (absent) means the fact is still held. A caller-supplied valid_at must not be
   // future-dated. Transaction-time (created/expired) is server-assigned and not
-  // expressible here. These are write-time inputs; InspectMemory does not populate
-  // them on read-back in this change.
+  // expressible here. On read-back, InspectMemory reports both, each absent when
+  // the stored column is NULL, so a superseded edge (still listed, since inspect
+  // reports what is held) carries invalid_at and a current one does not.
   google.protobuf.Timestamp valid_at = 7;
   google.protobuf.Timestamp invalid_at = 8;
 
