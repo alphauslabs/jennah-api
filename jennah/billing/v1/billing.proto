@@ -25,6 +25,29 @@ service BillingService {
     option (google.api.http) = {get: "/v1/billing"};
   }
 
+  // Reads the active enterprise's recorded formation token usage as aggregated
+  // buckets, never as individual formation records. External (gateway) RPC.
+  // Authenticated, and gated on `billing.usage:read`, which the built-in member
+  // role does NOT carry. Tokens only: no price, cost or currency is returned.
+  //
+  // Grouping by scope, or filtering on a scope, additionally requires reach over
+  // every agent workspace AND every subject scope in the enterprise (blanket reach
+  // in both selector namespaces). Without it the request is refused with
+  // PERMISSION_DENIED; there is no partial, reach-filtered answer, so a per-scope
+  // breakdown always adds up to the enterprise's totals.
+  //
+  // Answered whether or not the deployment has a billing integration configured,
+  // unlike the other methods here: token usage is recorded without one.
+  //
+  // Rejections (INVALID_ARGUMENT): a missing start_time, an end_time not after
+  // start_time, a start_time earlier than the 400-day retention period, an unknown
+  // time_zone, a malformed caller filter, or a result larger than the published
+  // bucket maximum (narrow the range, coarsen the grain, or add a filter). None is
+  // answered with a trimmed result.
+  rpc GetFormationTokenUsage(GetFormationTokenUsageRequest) returns (GetFormationTokenUsageResponse) {
+    option (google.api.http) = {get: "/v1/billing/usage/formation-tokens"};
+  }
+
   // Binds the subscription behind a single-use registration handle to the caller's
   // active enterprise and applies its resolved tier. External (gateway) RPC.
   // Authenticated AND gated to ROLE_ROOT/ROLE_ADMIN on the active enterprise,
@@ -263,4 +286,89 @@ message ResolveMarketplaceRegistrationResponse {
   // The handle is deliberately NOT returned as a separate field. It is a bearer
   // capability, and there is no consumer for it apart from this URL.
   string redirect_url = 1;
+}
+
+// Calendar period a token usage bucket covers, evaluated in the request's
+// time_zone.
+enum TokenUsageGrain {
+  // No grain: the whole range is one period.
+  TOKEN_USAGE_GRAIN_UNSPECIFIED = 0;
+  // A calendar date.
+  TOKEN_USAGE_GRAIN_DAY = 1;
+  // An ISO week, beginning on Monday. A week can straddle two months or years.
+  TOKEN_USAGE_GRAIN_WEEK = 2;
+  // A calendar month.
+  TOKEN_USAGE_GRAIN_MONTH = 3;
+}
+
+// The one dimension token usage may be grouped by.
+enum TokenUsageDimension {
+  // No grouping: one bucket per period.
+  TOKEN_USAGE_DIMENSION_UNSPECIFIED = 0;
+  // The scope the formation wrote to. Requires blanket reach (see the RPC).
+  TOKEN_USAGE_DIMENSION_SCOPE = 1;
+  // The credential that requested the formation, as "user:<user id>" or
+  // "api_key:<key id>". An API key is the key itself, never its creator.
+  TOKEN_USAGE_DIMENSION_CALLER = 2;
+  // The model called, as configured for the region at the time.
+  TOKEN_USAGE_DIMENSION_MODEL = 3;
+  // The Jennah region that served the formation; empty when none was recorded.
+  TOKEN_USAGE_DIMENSION_REGION = 4;
+}
+
+// Restricts which usage records are aggregated. Every set field must match. A
+// filter does not imply a grouping.
+message TokenUsageFilter {
+  // Only this scope. Requires blanket reach (see the RPC).
+  string scope_id = 1;
+  // Only this caller: "user" or "api_key", set together with caller_id.
+  string caller_kind = 2;
+  string caller_id = 3;
+  // Only this model.
+  string model = 4;
+  // Only this region.
+  string region = 5;
+}
+
+message GetFormationTokenUsageRequest {
+  // Start of the half-open range [start_time, end_time) over the time each
+  // usage record was written. Required, and no earlier than 400 days ago.
+  google.protobuf.Timestamp start_time = 1;
+  // End of the range. Defaults to now; a later value is treated as now.
+  google.protobuf.Timestamp end_time = 2;
+  TokenUsageGrain grain = 3;
+  TokenUsageDimension group_by = 4;
+  // IANA time zone the grain's calendar periods are taken in, such as
+  // "Asia/Tokyo". Defaults to "UTC".
+  string time_zone = 5;
+  // Nested, not flattened, on purpose: a top-level scope_id would be read by the
+  // platform's per-scope access check, which would admit a caller reaching only
+  // that scope. The scope rule for this read is blanket reach, applied by the
+  // method itself.
+  TokenUsageFilter filter = 6;
+}
+
+// One period's usage for one value of the grouping dimension.
+message TokenUsageBucket {
+  // The period's first calendar date in the request's time zone, as YYYY-MM-DD.
+  // Empty when the request has no grain. A bucket at either end of the range
+  // covers only the part of its period inside the range.
+  string period_start = 1;
+  // The grouping dimension's value. Empty when the request has no grouping.
+  string key = 2;
+  // Formations that reached the model in this bucket.
+  int64 formations = 3;
+  // Model-reported input and output tokens, summed. Kept apart because they are
+  // priced differently. Output includes the model's reasoning tokens.
+  int64 input_tokens = 4;
+  int64 output_tokens = 5;
+}
+
+message GetFormationTokenUsageResponse {
+  // Ordered by period_start, then key.
+  repeated TokenUsageBucket buckets = 1;
+  // The range and zone the buckets were computed under, after defaults.
+  google.protobuf.Timestamp start_time = 2;
+  google.protobuf.Timestamp end_time = 3;
+  string time_zone = 4;
 }
