@@ -83,6 +83,27 @@ message AgentInstance {
   // provisioning phase, or the failure reason when status is FAILED). Empty for
   // a plain ACTIVE agent.
   string status_detail = 7;
+  // How much semantic memory this workspace holds; see ScopeVolume. Unset when
+  // the server did not report it.
+  ScopeVolume volume = 8;
+}
+
+// A memory scope's semantic volume: the figure the per-scope volume ceiling and
+// the per-query scan budget are measured against, reported so a caller can see it
+// before either limit refuses them.
+//
+// It counts vector chunk ROWS, including chunks retired by supersession: a retired
+// chunk still occupies a row and is still read by a search that travels back to
+// it, so it costs what a current chunk costs. It can therefore exceed the number
+// of chunks an ordinary query returns. It may briefly lag a commit that just
+// landed.
+message ScopeVolume {
+  // False when the scope was written before its volume was counted and has not
+  // been counted since. Such a scope has an UNKNOWN volume, not an empty one, and
+  // chunk_count is then 0 and meaningless. It becomes counted on its next commit
+  // carrying a chunk, or when the platform counts it.
+  bool counted = 1;
+  int64 chunk_count = 2; // vector chunk rows the scope holds; meaningful only when counted
 }
 
 // Request message for the AgentService.CreateAgent rpc.

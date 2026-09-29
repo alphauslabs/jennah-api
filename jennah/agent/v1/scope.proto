@@ -116,6 +116,9 @@ message MemoryScope {
   // Human-readable detail for a non-terminal/failed status. Empty for a plain
   // ACTIVE scope.
   string status_detail = 8;
+  // How much semantic memory this scope holds; see ScopeVolume. Unset when the
+  // server did not report it.
+  ScopeVolume volume = 9;
 }
 
 // Request message for the ScopeService.CreateScope rpc.
