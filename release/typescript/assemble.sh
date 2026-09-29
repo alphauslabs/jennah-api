@@ -47,4 +47,11 @@ export const version = "$TSVER";
 export const sourceCommit = "$(git rev-parse --verify --quiet HEAD || echo unknown)";
 EOF
 npm pkg set version="$TSVER" >/dev/null
+# npm verifies the provenance of a trusted publish against repository.url,
+# which must name the repository whose workflow built the tarball: this one,
+# not jennah-sdk-ts (homepage and bugs still point there). Release builds only,
+# so a local dev-generate leaves the checkout's package.json untouched.
+if [[ -n ${VERSION:-} ]]; then
+  npm pkg set repository.url="git+https://github.com/${GITHUB_REPOSITORY:-alphauslabs/jennah-api}.git" >/dev/null
+fi
 echo "$TSVER"

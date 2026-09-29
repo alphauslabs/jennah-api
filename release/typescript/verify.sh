@@ -35,7 +35,16 @@ npm pack --pack-destination "$OUT" >/dev/null
 TGZ=$OUT/jennah-sdk-ts-$TSVER.tgz
 # Guard against a package.json the version stamp did not reach.
 [[ -f $TGZ ]] || { echo "packed tarball does not carry version $TSVER:" >&2; ls "$OUT" >&2; exit 1; }
-PACKED=$(tar -xzOf "$TGZ" package/package.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).version))')
+field() { tar -xzOf "$TGZ" package/package.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let v=JSON.parse(s);for(const k of process.argv[1].split("."))v=v?.[k];console.log(v??"")})' "$1"; }
+PACKED=$(field version)
 [[ $PACKED == "$TSVER" ]] || { echo "packed package.json says $PACKED, want $TSVER" >&2; exit 1; }
+# npm rejects a trusted publish whose repository.url is not the repository that
+# built it, and it would do so only after PyPI had published. Catch it here,
+# before any publish step runs.
+if [[ -n ${VERSION:-} && -n ${GITHUB_REPOSITORY:-} ]]; then
+  REPO_URL=$(field repository.url)
+  [[ $REPO_URL == "git+https://github.com/$GITHUB_REPOSITORY.git" ]] ||
+    { echo "packed repository.url is $REPO_URL, but npm provenance requires github.com/$GITHUB_REPOSITORY" >&2; exit 1; }
+fi
 echo "$TSVER" >"$OUT/version"
 echo "jennah-sdk-ts $TSVER verified on $(cat "$OUT/base")"
