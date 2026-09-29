@@ -1,12 +1,15 @@
-"""Cross-language session tests: jennah-sdk-go and jennah-sdk-py sharing one file.
+"""Cross-language session tests: jennah-sdk-go, jennah-sdk-py and jennah-sdk-ts
+sharing one file.
 
 The conformance suite proves each SDK satisfies client-credentials on its own.
-These prove the property that contract exists for: two different languages'
-clients, in two processes, sharing one stored session without stranding each
-other. Run by run.sh against the Go tree and Python distribution that verify
-just tested, so both halves are the code being released.
+These prove the property that contract exists for: different languages'
+clients, in separate processes, sharing one stored session without stranding
+each other. Run by run.sh against the Go tree, Python distribution and
+TypeScript tarball that verify just tested, so every side is the code being
+released.
 
-Env: GOHELPER, the built release/crosslang/gohelper binary.
+Env: GOHELPER, the built release/crosslang/gohelper binary; TSHELPER,
+release/crosslang/tshelper/tshelper.mjs installed beside jennah-sdk-ts.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from jennah.agent.v1 import agent_pb2, agent_pb2_grpc
 from jennah.auth.v1 import auth_pb2, auth_pb2_grpc
 
 GOHELPER = os.environ.get("GOHELPER", "")
+TSHELPER = os.environ.get("TSHELPER", "")
 
 
 def _bearer(context) -> str:
@@ -77,6 +81,7 @@ def machine(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("JENNAH_API_KEY", raising=False)
     assert GOHELPER and os.access(GOHELPER, os.X_OK), "GOHELPER must name the built Go helper"
+    assert TSHELPER and os.path.isfile(TSHELPER), "TSHELPER must name the installed TypeScript helper"
     return tmp_path
 
 
@@ -106,6 +111,12 @@ def expired_session():
 def go(*args, timeout=60) -> str:
     r = subprocess.run([GOHELPER, *args], capture_output=True, text=True, timeout=timeout)
     assert r.returncode == 0, f"gohelper {' '.join(args)}: {r.stderr.strip()}"
+    return r.stdout.strip()
+
+
+def ts(*args, timeout=60) -> str:
+    r = subprocess.run(["node", TSHELPER, *args], capture_output=True, text=True, timeout=timeout)
+    assert r.returncode == 0, f"tshelper {' '.join(args)}: {r.stderr.strip()}"
     return r.stdout.strip()
 
 
@@ -139,20 +150,52 @@ def test_python_renewal_keeps_go_authenticated(machine, platform):
     assert platform.presented[-1] == "at_renewed_1"
 
 
+def test_typescript_renewal_keeps_go_and_python_authenticated(machine, platform):
+    """TypeScript renews and rotates; Go and then Python authenticate with the
+    renewed session, and neither renews again."""
+    expired_session()
+    assert ts("call", platform.endpoint) == "ok"
+    assert platform.refreshes == 1
+    assert credentials.load_session().refresh_token == "rt_rotated_1"
+
+    assert go("call", platform.endpoint) == "ok"
+    python_call(platform.endpoint)
+    assert platform.refreshes == 1, "another language renewed instead of adopting TypeScript's renewal"
+    assert platform.presented[-2:] == ["at_renewed_1", "at_renewed_1"]
+
+
+@pytest.mark.parametrize("renewer", ["go", "python"])
+def test_other_renewals_keep_typescript_authenticated(machine, platform, renewer):
+    """Go or Python renews and rotates; TypeScript authenticates with the
+    renewed session and never presents the dead one."""
+    expired_session()
+    if renewer == "go":
+        assert go("call", platform.endpoint) == "ok"
+    else:
+        python_call(platform.endpoint)
+    assert platform.refreshes == 1
+
+    assert ts("call", platform.endpoint) == "ok"
+    assert platform.refreshes == 1, f"TypeScript renewed again instead of adopting {renewer}'s renewal"
+    assert platform.presented[-1] == "at_renewed_1"
+
+
 def test_renewals_alternate_between_languages(machine, platform):
-    """Each language renews in turn, each time with the refresh token the other
+    """Each language renews in turn, each time with the refresh token another
     wrote. A client that kept a rotation private would break the chain at the
     next step, because the token on disk would already be dead."""
     expired_session()
-    for round_ in range(1, 5):
+    callers = [
+        lambda: go("call", platform.endpoint) == "ok" or pytest.fail("go call"),
+        lambda: python_call(platform.endpoint),
+        lambda: ts("call", platform.endpoint) == "ok" or pytest.fail("ts call"),
+    ]
+    for round_ in range(1, 7):
         if round_ > 1:
             # The stored access token expires, as time would make it.
             with platform.mu:
                 platform.accept = "not-yet-issued"
-        if round_ % 2:
-            assert go("call", platform.endpoint) == "ok"
-        else:
-            python_call(platform.endpoint)
+        callers[(round_ - 1) % len(callers)]()
         assert platform.refreshes == round_
         assert credentials.load_session().refresh_token == f"rt_rotated_{round_}"
 
@@ -161,7 +204,7 @@ def _py_token(n: int) -> str:
     return f"py_{n}_" + "x" * (n % 37)
 
 
-_SHAPE = re.compile(r"^(go|py)_(\d+)_(x*)$")
+_SHAPE = re.compile(r"^(go|py|ts)_(\d+)_(x*)$")
 
 
 def _whole(tok: str) -> bool:
@@ -170,8 +213,8 @@ def _whole(tok: str) -> bool:
 
 
 def test_concurrent_session_file_io_across_languages(machine):
-    """5.4: both languages rewrite the file while both read it. No reader in
-    either language ever sees a torn or interleaved session."""
+    """5.4: every language rewrites the file while every language reads it. No
+    reader in any language ever sees a torn or interleaved session."""
     credentials.save_session(credentials.Session(access_token=_py_token(0), refresh_token="rt"))
     py_partial, py_reads = 0, 0
     stop = threading.Event()
@@ -197,18 +240,24 @@ def test_concurrent_session_file_io_across_languages(machine):
     reader.start()
     go_reader = subprocess.Popen([GOHELPER, "read", "3"], stdout=subprocess.PIPE, text=True)
     go_writer = subprocess.Popen([GOHELPER, "write", "300"], stdout=subprocess.PIPE, text=True)
+    ts_reader = subprocess.Popen(["node", TSHELPER, "read", "3"], stdout=subprocess.PIPE, text=True)
+    ts_writer = subprocess.Popen(["node", TSHELPER, "write", "300"], stdout=subprocess.PIPE, text=True)
     writer = threading.Thread(target=py_writer)
     writer.start()
     writer.join()
     assert go_writer.wait(timeout=60) == 0
+    assert ts_writer.wait(timeout=60) == 0
     go_out = go_reader.communicate(timeout=60)[0].split()
+    ts_out = ts_reader.communicate(timeout=60)[0].split()
     stop.set()
     reader.join()
 
     go_reads, go_partial = int(go_out[0]), int(go_out[1])
-    assert go_reads > 0 and py_reads > 0
+    ts_reads, ts_partial = int(ts_out[0]), int(ts_out[1])
+    assert go_reads > 0 and py_reads > 0 and ts_reads > 0
     assert go_partial == 0, f"Go read {go_partial} torn sessions in {go_reads} reads"
     assert py_partial == 0, f"Python read {py_partial} torn sessions in {py_reads} reads"
+    assert ts_partial == 0, f"TypeScript read {ts_partial} torn sessions in {ts_reads} reads"
     if sys.platform != "win32":
         path = credentials.session_path()
         assert os.stat(path).st_mode & 0o777 == 0o600

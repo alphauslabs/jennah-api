@@ -30,3 +30,16 @@ plugins:
     include_imports: true
   - remote: buf.build/grpc/python:v1.70.0
     out: generated/python
+  # TypeScript (jennah-sdk-ts). Pinned to the @bufbuild/protobuf runtime version
+  # jennah-sdk-ts declares, so bump the two together. One plugin emits both the
+  # messages and the service descriptors Connect-ES clients are built from.
+  # include_imports emits google/api and gnostic too, because every generated
+  # file imports the descriptors of the files it depends on; the well-known
+  # types come from the runtime instead. import_extension=js because the SDK is
+  # an ES module, and Node resolves no extensionless relative import in one.
+  - remote: buf.build/bufbuild/es:v2.15.0
+    out: generated/ts
+    include_imports: true
+    opt:
+      - target=ts
+      - import_extension=js

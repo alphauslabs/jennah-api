@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
-# Runs the cross-language session tests against a jennah-sdk-go tree and a
-# jennah-sdk-py distribution, normally the two that verify just tested.
+# Runs the cross-language session tests against a jennah-sdk-go tree, a
+# jennah-sdk-py distribution and a jennah-sdk-ts tarball, normally the three
+# that verify just tested.
 #
-# Usage: run.sh <jennah-sdk-go dir or verify's tree.tgz> <jennah-sdk-py dist dir or source dir>
-#   A dist dir installs its wheel into a fresh venv (CI). A source dir is put on
-#   PYTHONPATH as-is, for running locally against an assembled checkout, in which
-#   case grpcio, protobuf, googleapis-common-protos and pytest must already be
-#   importable.
+# Usage: run.sh <sdk-go dir or tree.tgz> <sdk-py dist dir or source dir> <sdk-ts out dir or source dir>
+#   A Python dist dir installs its wheel into a fresh venv (CI). A source dir is
+#   put on PYTHONPATH as-is, for running locally against an assembled checkout,
+#   in which case grpcio, protobuf, googleapis-common-protos and pytest must
+#   already be importable.
+#   A TypeScript dir holding a .tgz (verify's out/) installs that tarball; any
+#   other dir must be an assembled, built checkout (dist/ present) and is
+#   installed from as-is.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-GO_IN=${1:?usage: run.sh <sdk-go dir|tree.tgz> <sdk-py dist|source dir>}
-PY_IN=$(cd "${2:?usage: run.sh <sdk-go dir|tree.tgz> <sdk-py dist|source dir>}" && pwd)
+GO_IN=${1:?usage: run.sh <sdk-go dir|tree.tgz> <sdk-py dist|source dir> <sdk-ts out|source dir>}
+PY_IN=$(cd "${2:?usage: run.sh <sdk-go dir|tree.tgz> <sdk-py dist|source dir> <sdk-ts out|source dir>}" && pwd)
+TS_IN=$(cd "${3:?usage: run.sh <sdk-go dir|tree.tgz> <sdk-py dist|source dir> <sdk-ts out|source dir>}" && pwd)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
@@ -37,6 +42,14 @@ EOF
 go mod tidy
 go build -o "$WORK/gohelper-bin" .
 export GOHELPER=$WORK/gohelper-bin
+
+# Install the TypeScript helper against exactly that package.
+mkdir "$WORK/tshelper"
+cp "$HERE/tshelper/tshelper.mjs" "$WORK/tshelper/"
+TS_PKG=$(compgen -G "$TS_IN/jennah-sdk-ts-*.tgz" | head -1 || true)
+[[ -n $TS_PKG ]] || { [[ -d $TS_IN/dist ]] && TS_PKG=$TS_IN; } || { echo "no jennah-sdk-ts tarball or built checkout in $TS_IN" >&2; exit 1; }
+(cd "$WORK/tshelper" && echo '{"type":"module","private":true}' >package.json && npm install --no-audit --no-fund --silent "$TS_PKG")
+export TSHELPER=$WORK/tshelper/tshelper.mjs
 
 cd "$HERE"
 if compgen -G "$PY_IN/*.whl" >/dev/null; then

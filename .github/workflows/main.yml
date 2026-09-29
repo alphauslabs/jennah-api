@@ -53,6 +53,8 @@ jobs:
           name: Go
         - lang: python
           name: Python
+        - lang: typescript
+          name: TypeScript
     steps:
     - uses: actions/checkout@v6
 
@@ -69,6 +71,12 @@ jobs:
       with:
         python-version: '3.12'
 
+    # The oldest Node the SDK supports (engines.node), so a newer-only API
+    # cannot slip in unnoticed.
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22.12'
+
     - name: Assemble, test and build
       env:
         DEPLOYER_TOKEN: ${{ secrets.GH_TOKEN }}
@@ -80,8 +88,8 @@ jobs:
         name: sdk-${{ matrix.lang }}
         path: out/
 
-  # The SDKs verify just tested, sharing one session file across two processes:
-  # a renewal in either language must leave the other authenticated.
+  # The SDKs verify just tested, sharing one session file across processes: a
+  # renewal in any language must leave the others authenticated.
   crosslang:
     name: Cross-language sessions
     needs: verify
@@ -102,8 +110,12 @@ jobs:
       with:
         python-version: '3.12'
 
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22.12'
+
     - name: Run cross-language session tests
-      run: release/crosslang/run.sh out/sdk-go/tree.tgz out/sdk-python/dist
+      run: release/crosslang/run.sh out/sdk-go/tree.tgz out/sdk-python/dist out/sdk-typescript
 
   publish:
     name: Publish
@@ -115,7 +127,7 @@ jobs:
     environment: release
     permissions:
       contents: read
-      id-token: write # PyPI trusted publishing; no stored upload token
+      id-token: write # PyPI and npm trusted publishing; no stored upload token
     steps:
     - uses: actions/checkout@v6
 
@@ -126,12 +138,25 @@ jobs:
 
     # Order matters. A PyPI upload cannot be withdrawn and is the step most
     # likely to be refused (name, version already used, publisher config), so
-    # it goes first. The Go push after it is idempotent: if it fails, re-running
-    # this job completes the release.
+    # it goes first; npm, equally irreversible, second; the Go push last. Every
+    # step is a no-op when its registry already holds this release, so if any
+    # step fails, re-running this job completes the release.
     - name: Publish jennah-sdk-py to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
       with:
         packages-dir: out/sdk-python/dist/
+        skip-existing: true
+
+    # Trusted publishing needs npm 11.5.1 or later, which Node 22 does not ship.
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+        registry-url: 'https://registry.npmjs.org'
+
+    - name: Publish jennah-sdk-ts to npm
+      env:
+        VERSION: ${{ github.ref_name }}
+      run: release/typescript/publish.sh out/sdk-typescript
 
     - name: Publish jennah-sdk-go
       env:

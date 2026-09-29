@@ -64,7 +64,7 @@ func token(lang string, n int) string {
 	return fmt.Sprintf("%s_%d_%s", lang, n, strings.Repeat("x", n%37))
 }
 
-var tokenShape = regexp.MustCompile(`^(go|py)_(\d+)_(x*)$`)
+var tokenShape = regexp.MustCompile(`^(go|py|ts)_(\d+)_(x*)$`)
 
 func wholeToken(t string) bool {
 	m := tokenShape.FindStringSubmatch(t)
