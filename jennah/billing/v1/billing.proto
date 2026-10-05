@@ -362,6 +362,13 @@ message TokenUsageBucket {
   // priced differently. Output includes the model's reasoning tokens.
   int64 input_tokens = 4;
   int64 output_tokens = 5;
+  // Formation units consumed by the formations in this bucket, summed per
+  // formation: a formation's units are the larger of 1, its input tokens divided
+  // by 16,384, and its output tokens divided by 8,192, each rounded up. Not
+  // derivable from the bucket's token sums, because units are counted per
+  // formation. A formation whose model calls reported no tokens counts toward the
+  // formation ceiling but has no row here.
+  int64 units = 6;
 }
 
 message GetFormationTokenUsageResponse {

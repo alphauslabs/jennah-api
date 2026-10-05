@@ -1795,6 +1795,16 @@ message FormMemoryResponse {
   // here. Asking an extractor to volunteer what it failed to keep is asking a model
   // to notice its own absence, which is the least reliable thing a model does.
   repeated SummarizedStructure summarized_structures = 13;
+
+  // The formation units this formation consumed: the larger of 1, its input
+  // tokens divided by 16,384, and its output tokens (reasoning included) divided
+  // by 8,192, each rounded up, with tokens summed over every model call the
+  // formation made. The formation ceiling counts units, so this is what the
+  // formation took from the enterprise's allowance.
+  //
+  // A receipt returned for a replayed formation key reports the units of the
+  // formation that produced it, and the replay itself consumes none.
+  int64 formation_units = 14;
 }
 
 // ---------------------------------------------------------------------------
