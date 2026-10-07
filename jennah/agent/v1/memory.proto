@@ -1140,6 +1140,21 @@ message SemanticMatch {
   // the first such caller: it is how a revision knows it is not retiring something
   // newer than the conversation it came from.
   google.protobuf.Timestamp valid_at = 11;
+
+  // The chunk's VALID-TIME end: when the passage's content stopped holding. Absent
+  // while the window is open. The default arm ranks only currently-held chunks, so
+  // every match it returns has this absent; it is present only on a read bounded by
+  // `SemanticQuery.as_of_valid`, for a chunk whose window has closed since that
+  // instant.
+  //
+  // Additive, on the same terms as `valid_at`: a client that ignores it sees exactly
+  // what it saw before, and a default-arm response is unchanged.
+  //
+  // It is reported because a valid-time-bounded read returns passages that are no
+  // longer current, and without their end a caller cannot tell them from current
+  // ones, or say when they stopped holding. Together with `valid_at` it is the
+  // window the inspection listing reports for the same chunk.
+  google.protobuf.Timestamp invalid_at = 12;
 }
 
 // Graph traversal result rows. Each row carries the matched elements' key
