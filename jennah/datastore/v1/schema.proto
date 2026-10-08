@@ -26,8 +26,8 @@ service SchemaService {
   // table reaches SCHEMA_STATUS_READY before committing data to it.
   //
   // Requires datastore.schema:manage, which is deliberately NOT part of the
-  // built-in member role: declaring a table issues DDL against a shared
-  // data-plane database, so it is always an explicit grant to a custom role or
+  // built-in member role: declaring a table changes schema on storage shared
+  // with other datasets, so it is always an explicit grant to a custom role or
   // an explicitly scoped key. It IS grantable to an API key: a machine
   // principal building an app has to be able to declare its own tables.
   rpc DeclareTables(DeclareTablesRequest) returns (DeclareTablesResponse) {
@@ -142,9 +142,8 @@ message IndexDeclaration {
   string name = 1; // logical index name, validated like a column name
   repeated string columns = 2; // logical column names, in index key order
   bool unique = 3;
-  // Uniqueness is enforced WITHIN the dataset slice, never across the shared
-  // data-plane database: the platform prepends the clamp columns to the index
-  // key, so two datasets may each hold a row with the same value.
+  // Uniqueness is enforced WITHIN the dataset, never across datasets, so two
+  // datasets may each hold a row with the same value.
 }
 
 // One table in a declaration.
@@ -154,10 +153,9 @@ message TableDeclaration {
   repeated ColumnDeclaration columns = 2;
 
   // Logical column names forming the table's primary key, in order. The
-  // platform PREPENDS `(EnterpriseId, DatasetId)` to whatever is named here:
-  // that is not expressible in the declaration and cannot be overridden or
-  // reordered, because it is what makes cross-slice access structurally
-  // impossible rather than merely denied.
+  // platform additionally scopes every key to the dataset, outside the
+  // declaration: that cannot be overridden, and it is what makes access across
+  // datasets structurally impossible rather than merely denied.
   repeated string primary_key = 3;
 
   repeated IndexDeclaration indexes = 4;
@@ -218,9 +216,9 @@ message ColumnSchema {
 message TableSchema {
   string name = 1; // logical name
   repeated ColumnSchema columns = 2;
-  // Logical primary-key columns AS DECLARED: the `(EnterpriseId, DatasetId)`
-  // prefix the platform prepends is not listed, because it is not a tenant
-  // concept and naming it here would imply it were optional.
+  // Logical primary-key columns AS DECLARED. The platform's own scoping of the
+  // key to the dataset is not listed: it is not something a caller declares or
+  // can change.
   repeated string primary_key = 3;
   repeated IndexDeclaration indexes = 4;
   SchemaStatus status = 5;

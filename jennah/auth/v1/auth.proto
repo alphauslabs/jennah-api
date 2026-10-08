@@ -64,8 +64,8 @@ service AuthService {
   // --- API-key management (external/gateway RPCs; authenticated) ---
 
   // Mints a new API key for the caller's active enterprise. External (gateway)
-  // RPC. Authenticated AND gated to ROLE_ROOT/ROLE_ADMIN, resolved live from the
-  // Memberships table (never trusted from a claim). The plaintext secret is
+  // RPC. Authenticated AND gated to ROLE_ROOT/ROLE_ADMIN, checked against the
+  // caller's current role (never trusted from a claim). The plaintext secret is
   // returned exactly once, in this response, and is NOT retrievable afterward,
   // only its sha256 hash is stored. The key resolves to a ROLE_MEMBER-equivalent
   // service principal scoped to the enterprise.
@@ -100,8 +100,8 @@ service AuthService {
 
   // Invites a person by email into the caller's active enterprise, granting
   // ROLE_ADMIN or ROLE_MEMBER (never ROLE_ROOT). External (gateway) RPC.
-  // Authenticated AND gated to ROLE_ROOT/ROLE_ADMIN (resolved live from the
-  // Memberships table). Membership is NOT granted by email match: this only
+  // Authenticated AND gated to ROLE_ROOT/ROLE_ADMIN (checked against the
+  // caller's current role). Membership is NOT granted by email match: this only
   // creates a pending invitation bound to a single-use token, returned exactly
   // once in the response for the inviter to share. The grant happens when the
   // invitee accepts (AcceptInvitation) while signed in. Rejects an email already
@@ -163,7 +163,7 @@ service AuthService {
   }
 
   // Removes a member from the caller's active enterprise, deleting their
-  // Memberships row and revoking their refresh sessions scoped to it (so no new
+  // membership and revoking their refresh sessions scoped to it (so no new
   // access token can be minted for it; an already-issued one lasts until it
   // expires). External (gateway) RPC. Authenticated AND gated to
   // ROLE_ROOT/ROLE_ADMIN (a member MAY remove themselves, which is a leave). The
@@ -189,7 +189,7 @@ service AuthService {
 
   // Updates mutable fields of the caller's active enterprise (currently just its
   // display name). External (gateway) RPC. Authenticated AND gated to
-  // ROLE_ROOT/ROLE_ADMIN (resolved live from the Memberships table). The target
+  // ROLE_ROOT/ROLE_ADMIN (checked against the caller's current role). The target
   // is always the caller's active enterprise (from the token), never a path/body
   // id, mirroring ListMembers/ChangeMemberRole.
   rpc UpdateEnterprise(UpdateEnterpriseRequest) returns (UpdateEnterpriseResponse) {
@@ -289,7 +289,7 @@ enum ResponseMode {
 }
 
 // A caller's role within an enterprise. Exactly one ROLE_ROOT per enterprise
-// (its creator/owner); resolved from the Memberships table, never carried in
+// (its creator/owner); resolved from the current membership, never carried in
 // the access token (so role changes apply immediately).
 enum Role {
   ROLE_UNSPECIFIED = 0;
@@ -298,9 +298,8 @@ enum Role {
   ROLE_MEMBER = 3;
 }
 
-// One of the caller's enterprise memberships (a row in the Memberships join
-// table), surfaced in Identity so a multi-enterprise user can pick which one to
-// switch into.
+// One of the caller's enterprise memberships, surfaced in Identity so a
+// multi-enterprise user can pick which one to switch into.
 message Membership {
   string enterprise_id = 1;
   Role role = 2;
@@ -647,7 +646,7 @@ message Member {
   // Built-in role within the enterprise. ROLE_UNSPECIFIED when the member holds
   // a custom role instead, see custom_role_id.
   Role role = 3;
-  google.protobuf.Timestamp joined_at = 4; // Memberships row creation time
+  google.protobuf.Timestamp joined_at = 4; // when the member joined the enterprise
   // Set when the member holds a custom RBAC role rather than a built-in one; it
   // is the assigned role's id (join against ListRoles for its name/permissions).
   // Empty for a built-in role, where `role` carries the assignment.

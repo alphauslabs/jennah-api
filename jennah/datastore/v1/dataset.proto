@@ -9,14 +9,12 @@ option go_package = "github.com/alphauslabs/jennah-api/datastore";
 
 // DatasetService is the lifecycle control plane for an enterprise's application datasets.
 service DatasetService {
-  // Creates a dataset under the caller's enterprise, registers it in the
-  // control-plane directory, and places it on a data-plane database compatible
-  // with the requested location. The EnterpriseId is taken from the token, never
-  // the body.
+  // Creates a dataset under the caller's enterprise and places it in the
+  // requested location. The enterprise is taken from the token, never the body.
   //
-  // Returns the dataset synchronously. When the data-plane database for the
-  // chosen location must be provisioned first, the returned Dataset carries
-  // DATASET_STATUS_PROVISIONING; poll GetDataset until DATASET_STATUS_ACTIVE.
+  // Returns the dataset synchronously. When the chosen location must be prepared
+  // first, the returned Dataset carries DATASET_STATUS_PROVISIONING; poll
+  // GetDataset until DATASET_STATUS_ACTIVE.
   //
   // Requires datastore.datasets:create AND a dataset selector already covering
   // the requested dataset_id: creating a dataset grants no access to it, for
@@ -46,7 +44,7 @@ service DatasetService {
   }
 
   // Deletes a dataset the caller owns: drops its declared tables and removes its
-  // catalog and directory records, cascading to all of its application rows.
+  // table catalog and the dataset itself, along with all of its application rows.
   // Every table the dataset holds is dropped, whatever their number. Returns a
   // receipt carrying the instant the teardown committed. A dataset_id not owned
   // by the caller's enterprise is treated as not found.
@@ -58,11 +56,10 @@ service DatasetService {
 // Lifecycle state of a dataset.
 enum DatasetStatus {
   DATASET_STATUS_UNSPECIFIED = 0;
-  // Ready for use: the data-plane database exists and the directory row is
-  // registered. Tables may be declared and data committed.
+  // Ready for use: tables may be declared and data committed.
   DATASET_STATUS_ACTIVE = 1;
-  // The data-plane database for the chosen location is being created (which can
-  // take minutes). No table may be declared yet; poll GetDataset until ACTIVE.
+  // The chosen location is being prepared (which can take minutes). No table may
+  // be declared yet; poll GetDataset until ACTIVE.
   DATASET_STATUS_PROVISIONING = 2;
   // Provisioning failed; status_detail carries the reason. The caller may retry
   // CreateDataset (idempotent on dataset_id) or delete the failed record.
@@ -131,7 +128,7 @@ message CreateDatasetRequest {
 
   // Scopes for the key minted when create_api_key is set. Each MUST be a subset
   // of the caller's own effective permissions and MUST NOT be management-class.
-  // When empty the key defaults to the member-equivalent data-plane scope, which
+  // When empty the key defaults to the member-equivalent data scopes, which
   // includes datastore.data:read/write but NOT datastore.schema:manage, so a key
   // meant to declare tables must name that permission explicitly.
   repeated string api_key_scopes = 5;
@@ -176,8 +173,8 @@ message ListDatasetsRequest {
   // one: a token the server cannot interpret is REJECTED with INVALID_ARGUMENT
   // rather than quietly restarting from the first page, because a silent restart
   // would hand a caller walking to exhaustion a partial listing that looks
-  // complete. A token can only narrow within the caller's slice; it can never
-  // widen it.
+  // complete. A token can only narrow within the caller's enterprise; it can
+  // never widen it.
   string page_token = 2;
 }
 

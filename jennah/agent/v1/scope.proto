@@ -14,9 +14,9 @@ option go_package = "github.com/alphauslabs/jennah-api/agent";
 // A memory scope is the platform's addressable unit of memory. An agent
 // workspace is one KIND of scope. A subject scope is the other: a durable
 // principal, typically an end user, whose memory outlives any single agent and
-// can be recalled by every agent authorized to reach it. Both kinds live in one
-// table, one identifier space per enterprise, one property graph and one tenancy
-// clamp; the kind is what selects which selector namespace authorizes access.
+// can be recalled by every agent authorized to reach it. Both kinds share one
+// identifier space per enterprise and one memory graph, under the same tenant
+// isolation; the kind is what selects which selector namespace authorizes access.
 //
 // AgentService is retained unchanged as the AGENT-KIND VIEW of this surface: it
 // creates, resolves, lists and destroys only agent-kind scopes, so a subject
@@ -39,8 +39,8 @@ service ScopeService {
   // Creates a memory scope of an explicit kind under the caller's enterprise.
   // The home region is resolved exactly as it is for an agent workspace, from
   // the optional `region` field or the platform default, and is FIXED for the
-  // scope's life: a subject scope's memory lives in that region's data-plane
-  // database and is never replicated elsewhere, which is what makes a residency
+  // scope's life: a subject scope's memory is stored in that region and is never
+  // replicated elsewhere, which is what makes a residency
   // commitment about a subject hold irrespective of which agent reads it.
   //
   // The identifier space is shared across both kinds, so an id that already
