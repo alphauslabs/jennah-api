@@ -82,6 +82,35 @@ service BillingService {
     };
   }
 
+  // Sets the active enterprise's formation overage multiple: how far past its
+  // monthly formation allowance a billable enterprise may form, as a multiple of
+  // its tier's overage unit band (see `overage_unit_band` on
+  // GetBillingStateResponse). External (gateway) RPC. Units only: no price is
+  // taken or returned.
+  //
+  // Only a signed-in user holding ROLE_ROOT or ROLE_ADMIN on the active
+  // enterprise can call it, resolved live from the Memberships table. It is not
+  // grantable by any permission, and an API key is refused before any role is
+  // resolved, including a key created by an administrator, so an agent can never
+  // raise its own spending limit.
+  //
+  // The multiple applies to the next formation admitted, for the current month.
+  // Lowering it below what the month has used refuses the next formation and does
+  // not reverse overage already used. An enterprise that is not billable may still
+  // store a multiple; it applies once the enterprise is billable.
+  //
+  // Rejections:
+  //   INVALID_ARGUMENT: the multiple is outside 0 to 10, or not a multiple of 0.5.
+  //   PERMISSION_DENIED / ENTERPRISE_ADMIN_REQUIRED: the caller is a member
+  //     without an administrator role, or is an API key. Carries a
+  //     `google.rpc.ErrorInfo` whose `domain` is "jennah.alphaus.cloud".
+  rpc SetFormationOverageCap(SetFormationOverageCapRequest) returns (SetFormationOverageCapResponse) {
+    option (google.api.http) = {
+      put: "/v1/billing/formation-overage-cap"
+      body: "*"
+    };
+  }
+
   // --- Internal provider-driven RPC (no HTTP annotation; proxy-to-backend only) ---
 
   // Exchanges an AWS Marketplace registration token for the buyer's marketplace
@@ -242,6 +271,50 @@ message GetBillingStateResponse {
   // a re-subscribe link rather than an expired-trial prompt. Empty when the plan is
   // platform-owned.
   string manage_url = 6;
+
+  // The formation fields below report the current formation window (the UTC
+  // calendar month on a paid tier) in formation units only. No price or currency
+  // amount is computed or returned.
+
+  // The tier's formation allowance for the window, in units. Unbounded on a tier
+  // with no formation ceiling, reported as -1.
+  int64 formation_units_allowance = 7;
+
+  // Formation units used in the window so far.
+  int64 formation_units_used = 8;
+
+  // Units used above the allowance this window. Zero when the enterprise is not
+  // billable, since a non-billable enterprise is refused at its allowance.
+  int64 formation_overage_units = 9;
+
+  // The enterprise's overage multiple: the stored value, or the default of 2 when
+  // none was set. Reported whether or not the enterprise is billable. Only a
+  // signed-in root or administrator can change it (SetFormationOverageCap).
+  double overage_multiple = 10;
+
+  // The overage band in units: `overage_multiple` times the tier's unit band, the
+  // number of overage units whose price equals one month of the tier's fee,
+  // rounded down. A billable enterprise is refused once the window's units reach
+  // `formation_units_allowance` plus this band. Zero on a tier with no overage.
+  int64 overage_unit_band = 11;
+
+  // True when formations past the allowance are admitted into the overage band
+  // and billed: the enterprise holds an active subscription on a product with a
+  // consumption dimension, on a tier that offers overage.
+  bool overage_billable = 12;
+}
+
+// Request message for the BillingService.SetFormationOverageCap rpc.
+message SetFormationOverageCapRequest {
+  // The new multiple, from 0 to 10 in steps of 0.5. Zero means no overage: a
+  // billable enterprise is refused at its allowance.
+  double overage_multiple = 1;
+}
+
+// Response message for the BillingService.SetFormationOverageCap rpc.
+message SetFormationOverageCapResponse {
+  // The multiple as stored.
+  double overage_multiple = 1;
 }
 
 // Request message for the BillingService.BindMarketplaceRegistration rpc.
