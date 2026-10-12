@@ -2193,7 +2193,6 @@ message RemoveFormationModelResponse {
   bool removed = 1;
 }
 
-
 // Request message for the MemoryService.CheckFormationModel rpc.
 message CheckFormationModelRequest {}
 
