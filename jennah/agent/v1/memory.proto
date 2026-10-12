@@ -2067,6 +2067,15 @@ message BedrockFormationModelSetup {
   // The role-session name every call uses, for the enterprise's audit trail:
   // `jennah-` followed by the enterprise id.
   string session_name = 3;
+  // A CloudFormation template that creates a correct role: it trusts
+  // `principal_arn` only with `external_id`, may only invoke the model it names,
+  // and outputs the role ARN to set. Empty when none is published. Each URL names
+  // one immutable version of the template.
+  string role_template_url = 4;
+  // A link that opens the AWS console's stack-creation form for that template,
+  // with `external_id` and `principal_arn` already filled in. Empty when no
+  // template is published.
+  string launch_stack_url = 5;
 }
 
 // What the enterprise grants to let the platform call its Vertex model.
