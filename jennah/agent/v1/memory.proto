@@ -161,6 +161,11 @@ service MemoryService {
   // in another region, because a region-pinned scope whose content is inferred
   // elsewhere breaks a residency commitment invisibly.
   //
+  // An enterprise that configured its OWN formation model (SetFormationModel)
+  // forms on that model instead, in every region, and never on the platform's:
+  // a formation that cannot reach it fails with a status naming it, and writes
+  // nothing. Such a formation consumes no formation units.
+  //
   // Formation NEVER DELETES and never overwrites: a revision closes the prior
   // assertion's valid-time window and inserts a replacement, exactly as
   // SupersedeEdge and SupersedeChunk do, so what the agent believed before the
@@ -245,6 +250,80 @@ service MemoryService {
   // enterprise level, which names no scope and so requires no reach.
   rpc GetMemoryVocabulary(GetMemoryVocabularyRequest) returns (GetMemoryVocabularyResponse) {
     option (google.api.http) = {get: "/v1/memory/vocabulary"};
+  }
+
+  // --- Formation model (external/gateway RPCs; authenticated) ---
+  //
+  // An enterprise on a paid plan may run FormMemory on a generative model it owns
+  // and pays for: Claude or another model on Amazon Bedrock in its AWS account, or
+  // a model on Vertex AI in its GCP project. With one configured, every formation
+  // for the enterprise, in every region, runs on it, and NONE runs on the
+  // platform's model, even when the enterprise's model cannot be reached. Removing
+  // it is the only way back to the platform's model.
+  //
+  // No credential is ever sent or stored. The platform reaches the model as an
+  // identity bound to the enterprise: by assuming the enterprise's AWS role with
+  // an external ID unique to the enterprise, or as a Google service account
+  // created for the enterprise alone. So naming another customer's role or
+  // project reaches nothing.
+  //
+  // All four RPCs require the caller to be the enterprise's root or an
+  // administrator, checked against their current membership, and refuse API keys.
+  // No custom role can grant them.
+
+  // Issues the values the enterprise needs to grant the platform access to its
+  // model, for one provider. External (gateway) RPC.
+  //
+  // For BEDROCK: the AWS principal to trust and the external ID the trust policy
+  // must require. For VERTEX: the email of the service account created for this
+  // enterprise, which the enterprise grants Vertex access to in its project.
+  //
+  // Idempotent: repeating it returns the same values, and they do not change
+  // while the enterprise exists. Requires a plan that includes a formation model
+  // (`pro`, `scale`, `team`, `enterprise`).
+  rpc PrepareFormationModel(PrepareFormationModelRequest) returns (PrepareFormationModelResponse) {
+    option (google.api.http) = {
+      post: "/v1/formation-model:prepare"
+      body: "*"
+    };
+  }
+
+  // Sets the enterprise's formation model, replacing any previous one. External
+  // (gateway) RPC. Requires a plan that includes a formation model.
+  //
+  // PROBES THE MODEL FIRST: one structured-output generation through the same
+  // identity, request shape and bounds a formation uses. If it fails, nothing is
+  // stored, any previous model stays in place, and the error is
+  // FAILED_PRECONDITION with an ErrorInfo whose `step` metadata says which step
+  // failed: `access` (the role could not be assumed, or the service account was
+  // refused), `model` (the model is not enabled, not found, or refused the
+  // settings), or `answer` (the model answered but not with usable structured
+  // output). The provider's own message is included, since it describes the
+  // enterprise's own account.
+  //
+  // `max_output_tokens` above 65,536 or negative is refused with
+  // INVALID_ARGUMENT before any probe. Zero means the provider default.
+  rpc SetFormationModel(SetFormationModelRequest) returns (SetFormationModelResponse) {
+    option (google.api.http) = {
+      put: "/v1/formation-model"
+      body: "*"
+    };
+  }
+
+  // Reads the enterprise's formation model and the setup values issued to it.
+  // External (gateway) RPC. Available on every plan, so an enterprise whose plan
+  // no longer includes a formation model can still see the one it configured.
+  rpc GetFormationModel(GetFormationModelRequest) returns (GetFormationModelResponse) {
+    option (google.api.http) = {get: "/v1/formation-model"};
+  }
+
+  // Removes the enterprise's formation model, so formation runs on the platform's
+  // model again from the next request. External (gateway) RPC. Available on every
+  // plan, and the only way an enterprise whose plan no longer includes a
+  // formation model can form memory again without upgrading. Removes no memory
+  // and leaves the issued setup values in place.
+  rpc RemoveFormationModel(RemoveFormationModelRequest) returns (RemoveFormationModelResponse) {
+    option (google.api.http) = {delete: "/v1/formation-model"};
   }
 }
 
@@ -1962,4 +2041,129 @@ message GetMemoryVocabularyResponse {
   // be absent. A scope-level vocabulary REPLACES the enterprise one outright, so
   // this is never a merge of the two.
   MemoryVocabulary resolved = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Formation model
+// ---------------------------------------------------------------------------
+
+// Where an enterprise's own formation model is served.
+enum FormationModelProvider {
+  FORMATION_MODEL_PROVIDER_UNSPECIFIED = 0;
+  // Amazon Bedrock in the enterprise's AWS account.
+  FORMATION_MODEL_PROVIDER_BEDROCK = 1;
+  // Vertex AI in the enterprise's GCP project.
+  FORMATION_MODEL_PROVIDER_VERTEX = 2;
+}
+
+// What the enterprise grants to let the platform call its Bedrock model.
+message BedrockFormationModelSetup {
+  // The AWS principal (an IAM role ARN) the enterprise's role must trust.
+  string principal_arn = 1;
+  // The external ID the role's trust policy must require (`sts:ExternalId`).
+  // Unique to the enterprise; it is what stops another enterprise from using a
+  // role that trusts the platform.
+  string external_id = 2;
+  // The role-session name every call uses, for the enterprise's audit trail:
+  // `jennah-` followed by the enterprise id.
+  string session_name = 3;
+}
+
+// What the enterprise grants to let the platform call its Vertex model.
+message VertexFormationModelSetup {
+  // The service account created for this enterprise alone. Grant it
+  // `roles/aiplatform.user` in the project that serves the model.
+  string service_account_email = 1;
+}
+
+// A Bedrock formation model.
+message BedrockFormationModel {
+  // The IAM role in the enterprise's account that trusts `principal_arn` with
+  // the enterprise's external ID and may invoke the model.
+  string role_arn = 1;
+  // The AWS region calls are sent to. With a `global.` inference profile,
+  // inference may run outside this region.
+  string region = 2;
+  // A Bedrock model id or inference-profile id, e.g.
+  // `global.anthropic.claude-sonnet-5-5`.
+  string model = 3;
+}
+
+// A Vertex AI formation model.
+message VertexFormationModel {
+  // The GCP project that serves the model and granted the enterprise's service
+  // account access.
+  string project = 1;
+  // The Vertex location, e.g. `us-central1` or `global`.
+  string location = 2;
+  // A Vertex publisher model id, e.g. `gemini-3.8-flash`.
+  string model = 3;
+}
+
+// An enterprise's own formation model.
+message FormationModel {
+  FormationModelProvider provider = 1;
+  // Set when `provider` is BEDROCK.
+  BedrockFormationModel bedrock = 2;
+  // Set when `provider` is VERTEX.
+  VertexFormationModel vertex = 3;
+  // How much the model reasons before answering: `low`, `medium` or `high`, or
+  // empty for the provider's default. Every formation makes two model calls, and
+  // reasoning is billed by the provider as output.
+  string thinking_level = 4;
+  // The output bound of one model call, reasoning included. Zero means the
+  // provider default (32,000 on Bedrock).
+  int32 max_output_tokens = 5;
+  // Output only: when the model was last set, and by whom.
+  google.protobuf.Timestamp update_time = 6;
+  string updated_by = 7;
+}
+
+// Request message for the MemoryService.PrepareFormationModel rpc.
+message PrepareFormationModelRequest {
+  FormationModelProvider provider = 1;
+}
+
+// Response message for the MemoryService.PrepareFormationModel rpc.
+message PrepareFormationModelResponse {
+  FormationModelProvider provider = 1;
+  // Set for BEDROCK.
+  BedrockFormationModelSetup bedrock = 2;
+  // Set for VERTEX.
+  VertexFormationModelSetup vertex = 3;
+}
+
+// Request message for the MemoryService.SetFormationModel rpc.
+message SetFormationModelRequest {
+  // The model to set. `update_time` and `updated_by` are ignored.
+  FormationModel model = 1;
+}
+
+// Response message for the MemoryService.SetFormationModel rpc.
+message SetFormationModelResponse {
+  // The model as stored.
+  FormationModel model = 1;
+}
+
+// Request message for the MemoryService.GetFormationModel rpc.
+message GetFormationModelRequest {}
+
+// Response message for the MemoryService.GetFormationModel rpc.
+message GetFormationModelResponse {
+  // The enterprise's formation model. Unset when it has none, and formation runs
+  // on the platform's model.
+  FormationModel model = 1;
+  // The setup values issued for each provider, unset for a provider never
+  // prepared.
+  BedrockFormationModelSetup bedrock_setup = 2;
+  VertexFormationModelSetup vertex_setup = 3;
+}
+
+// Request message for the MemoryService.RemoveFormationModel rpc.
+message RemoveFormationModelRequest {}
+
+// Response message for the MemoryService.RemoveFormationModel rpc.
+message RemoveFormationModelResponse {
+  // False when the enterprise had no formation model, which is still success.
+  bool removed = 1;
 }
