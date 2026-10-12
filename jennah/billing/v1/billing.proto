@@ -304,10 +304,11 @@ message GetBillingStateResponse {
   // consumption dimension, on a tier that offers overage.
   bool overage_billable = 12;
 
-  // Formations in the window that ran on the enterprise's own formation model
-  // (see MemoryService.SetFormationModel). They consume no formation units and
-  // are not in `formation_units_used`, because the enterprise pays its model
-  // provider for them directly; they are counted here so they stay visible.
+  // Formations in the window that were sent to the enterprise's own formation
+  // model (see MemoryService.SetFormationModel), including any that failed there.
+  // They consume no formation units and are not in `formation_units_used`,
+  // because the enterprise pays its model provider for them directly; they are
+  // counted here so they stay visible.
   int64 byo_formations = 13;
 }
 

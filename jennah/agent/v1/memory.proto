@@ -325,6 +325,22 @@ service MemoryService {
   rpc RemoveFormationModel(RemoveFormationModelRequest) returns (RemoveFormationModelResponse) {
     option (google.api.http) = {delete: "/v1/formation-model"};
   }
+
+  // Checks the enterprise's formation model without changing it. External
+  // (gateway) RPC. Makes the same check call SetFormationModel makes, against the
+  // model as it is stored, through the same access formations use, and saves
+  // nothing. A failed check is a successful response with `ok` false and the step
+  // that failed, because the check itself ran: use it to find out why formations
+  // are failing, or to confirm access works again after fixing it.
+  //
+  // NOT_FOUND when no formation model is set. Available on every plan. The check
+  // call is billed by your model provider.
+  rpc CheckFormationModel(CheckFormationModelRequest) returns (CheckFormationModelResponse) {
+    option (google.api.http) = {
+      post: "/v1/formation-model:check"
+      body: "*"
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2175,4 +2191,22 @@ message RemoveFormationModelRequest {}
 message RemoveFormationModelResponse {
   // False when the enterprise had no formation model, which is still success.
   bool removed = 1;
+}
+
+
+// Request message for the MemoryService.CheckFormationModel rpc.
+message CheckFormationModelRequest {}
+
+// Response message for the MemoryService.CheckFormationModel rpc.
+message CheckFormationModelResponse {
+  // True when the model answered the check with usable structured output.
+  bool ok = 1;
+  // The step that failed when `ok` is false: `access` (the role could not be
+  // assumed), `model` (the provider refused the request or did not answer), or
+  // `answer` (the model answered, but not with usable structured output).
+  string step = 2;
+  // What failed, including the provider's own message, when `ok` is false.
+  string message = 3;
+  // The model that was checked.
+  FormationModel model = 4;
 }
