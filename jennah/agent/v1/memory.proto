@@ -255,17 +255,24 @@ service MemoryService {
   // --- Formation model (external/gateway RPCs; authenticated) ---
   //
   // An enterprise on a paid plan may run FormMemory on a generative model it owns
-  // and pays for: Claude or another model on Amazon Bedrock in its AWS account, or
-  // a model on Vertex AI in its GCP project. With one configured, every formation
-  // for the enterprise, in every region, runs on it, and NONE runs on the
-  // platform's model, even when the enterprise's model cannot be reached. Removing
-  // it is the only way back to the platform's model.
+  // and pays for: Claude or another model on Amazon Bedrock in its AWS account, a
+  // model on Vertex AI in its GCP project, or Claude on the Claude API with its own
+  // Anthropic API key. With one configured, every formation for the enterprise, in
+  // every region, runs on it, and NONE runs on the platform's model, even when the
+  // enterprise's model cannot be reached. Removing it is the only way back to the
+  // platform's model.
   //
-  // No credential is ever sent or stored. The platform reaches the model as an
-  // identity bound to the enterprise: by assuming the enterprise's AWS role with
-  // an external ID unique to the enterprise, or as a Google service account
-  // created for the enterprise alone. So naming another customer's role or
-  // project reaches nothing.
+  // For Bedrock and Vertex, no credential is ever sent or stored. The platform
+  // reaches the model as an identity bound to the enterprise: by assuming the
+  // enterprise's AWS role with an external ID unique to the enterprise, or as a
+  // Google service account created for the enterprise alone. So naming another
+  // customer's role or project reaches nothing.
+  //
+  // For the Claude API, the enterprise sends an API key, and every call for the
+  // enterprise uses that key and no other. The key is write-only: no read returns
+  // it, only its last four characters. It is destroyed when the model is removed,
+  // replaced by another provider's model or by a new key, or when the enterprise
+  // is deleted.
   //
   // All four RPCs require the caller to be the enterprise's root or an
   // administrator, checked against their current membership, and refuse API keys.
@@ -276,7 +283,9 @@ service MemoryService {
   //
   // For BEDROCK: the AWS principal to trust and the external ID the trust policy
   // must require. For VERTEX: the email of the service account created for this
-  // enterprise, which the enterprise grants Vertex access to in its project.
+  // enterprise, which the enterprise grants Vertex access to in its project. For
+  // ANTHROPIC there is nothing to grant: the response carries only the provider,
+  // and an ANTHROPIC model can be set without calling this first.
   //
   // Idempotent: repeating it returns the same values, and they do not change
   // while the enterprise exists. Requires a plan that includes a formation model
@@ -295,8 +304,9 @@ service MemoryService {
   // identity, request shape and bounds a formation uses. If it fails, nothing is
   // stored, any previous model stays in place, and the error is
   // FAILED_PRECONDITION with an ErrorInfo whose `step` metadata says which step
-  // failed: `access` (the role could not be assumed, or the service account was
-  // refused), `model` (the model is not enabled, not found, or refused the
+  // failed: `access` (the role could not be assumed, the service account was
+  // refused, or the API key was rejected), `model` (the model is not enabled, not
+  // found, or refused the
   // settings), or `answer` (the model answered but not with usable structured
   // output). The provider's own message is included, since it describes the
   // enterprise's own account.
@@ -2070,6 +2080,9 @@ enum FormationModelProvider {
   FORMATION_MODEL_PROVIDER_BEDROCK = 1;
   // Vertex AI in the enterprise's GCP project.
   FORMATION_MODEL_PROVIDER_VERTEX = 2;
+  // The Claude API, called with an API key from the enterprise's Anthropic
+  // organization.
+  FORMATION_MODEL_PROVIDER_ANTHROPIC = 3;
 }
 
 // What the enterprise grants to let the platform call its Bedrock model.
@@ -2125,6 +2138,23 @@ message VertexFormationModel {
   string model = 3;
 }
 
+// A Claude API formation model.
+message AnthropicFormationModel {
+  // A Claude model id, e.g. `claude-sonnet-5-5`.
+  string model = 1;
+  // Where the Claude API runs inference, e.g. `us`. Empty for the API's default.
+  // Sent on every call.
+  string inference_geo = 2;
+  // Input only: an API key from the enterprise's Anthropic organization. Required
+  // when the enterprise's current formation model is not ANTHROPIC. When it is,
+  // an empty key keeps the key already set, and a new key replaces it. The key is
+  // never returned by any read and is destroyed when the model is removed,
+  // replaced by another provider's, or replaced by a new key.
+  string api_key = 3;
+  // Output only: the last four characters of the key that is set.
+  string api_key_hint = 4;
+}
+
 // An enterprise's own formation model.
 message FormationModel {
   FormationModelProvider provider = 1;
@@ -2132,12 +2162,14 @@ message FormationModel {
   BedrockFormationModel bedrock = 2;
   // Set when `provider` is VERTEX.
   VertexFormationModel vertex = 3;
+  // Set when `provider` is ANTHROPIC.
+  AnthropicFormationModel anthropic = 8;
   // How much the model reasons before answering: `low`, `medium` or `high`, or
   // empty for the provider's default. Every formation makes two model calls, and
   // reasoning is billed by the provider as output.
   string thinking_level = 4;
   // The output bound of one model call, reasoning included. Zero means the
-  // provider default (32,000 on Bedrock).
+  // provider default (32,000 on Bedrock and on the Claude API).
   int32 max_output_tokens = 5;
   // Output only: when the model was last set, and by whom.
   google.protobuf.Timestamp update_time = 6;
@@ -2201,7 +2233,8 @@ message CheckFormationModelResponse {
   // True when the model answered the check with usable structured output.
   bool ok = 1;
   // The step that failed when `ok` is false: `access` (the role could not be
-  // assumed), `model` (the provider refused the request or did not answer), or
+  // assumed, or the API key was rejected), `model` (the provider refused the
+  // request or did not answer), or
   // `answer` (the model answered, but not with usable structured output).
   string step = 2;
   // What failed, including the provider's own message, when `ok` is false.
