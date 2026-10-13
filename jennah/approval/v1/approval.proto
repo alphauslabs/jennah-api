@@ -211,26 +211,52 @@ enum Quorum {
   // Every listed approver must approve. Persists a required count equal to the
   // size of the approver set.
   QUORUM_ALL = 2;
+  // The rule of a question (APPROVAL_KIND_QUESTION), and the only rule a question
+  // accepts: the first recorded answer is terminal as ANSWERED. Persists a
+  // required count of 1. Refused on an approval of kind APPROVAL.
+  QUORUM_FIRST_ANSWER = 3;
 }
 
-// Lifecycle of an approval. PENDING is the only non-terminal value; the other
-// four never change once reached, for any reason, through any operation.
+// Whether an approval asks "may I?" or "which?".
+//
+// Fixed at creation. As with Quorum, a client MUST NOT infer a kind by
+// exclusion: a kind added later arrives at an older client as
+// APPROVAL_KIND_UNSPECIFIED.
+enum ApprovalKind {
+  // On a creation request, means APPROVAL_KIND_APPROVAL. On a read, the kind is
+  // unknown to this client's proto version.
+  APPROVAL_KIND_UNSPECIFIED = 0;
+  // Approve or reject. Every approval created before kinds existed is this kind.
+  APPROVAL_KIND_APPROVAL = 1;
+  // A question with choices, free text, or both, answered with
+  // DECISION_VALUE_ANSWER or declined with DECISION_VALUE_REJECT. Takes only
+  // QUORUM_FIRST_ANSWER and ON_EXPIRE_EXPIRE.
+  APPROVAL_KIND_QUESTION = 2;
+}
+
+// Lifecycle of an approval. PENDING is the only non-terminal value; the others
+// never change once reached, for any reason, through any operation.
 enum ApprovalStatus {
   APPROVAL_STATUS_UNSPECIFIED = 0;
   APPROVAL_STATUS_PENDING = 1;
   APPROVAL_STATUS_APPROVED = 2;
+  // Rejected by an approver. For a question, an approver declined to answer.
   APPROVAL_STATUS_REJECTED = 3;
   // Reached its deadline undecided, under an on_expire of ON_EXPIRE_EXPIRE.
   APPROVAL_STATUS_EXPIRED = 4;
   // Withdrawn by the enterprise before any decision.
   APPROVAL_STATUS_CANCELLED = 5;
+  // A question that received its answer. Only a question reaches this status,
+  // and the answer is carried on the approval (Approval.answer).
+  APPROVAL_STATUS_ANSWERED = 6;
 }
 
 // What an undecided approval becomes at its deadline.
 //
 // No value automatically approves an undecided request on timeout.
 enum OnExpire {
-  // Treated as ON_EXPIRE_DENY.
+  // Treated as ON_EXPIRE_DENY for an approval, and as ON_EXPIRE_EXPIRE for a
+  // question.
   ON_EXPIRE_UNSPECIFIED = 0;
   // Resolve as REJECTED: the deadline itself is the refusal. The default, and the
   // right choice when a downstream caller branches on approved-vs-not.
@@ -270,8 +296,56 @@ enum DecisionValue {
   DECISION_VALUE_UNSPECIFIED = 0;
   DECISION_VALUE_APPROVE = 1;
   // Terminal immediately under EVERY quorum rule: one refusal ends the request
-  // however many approvals preceded it.
+  // however many approvals preceded it. On a question, the approver declined to
+  // answer.
   DECISION_VALUE_REJECT = 2;
+  // An answer to a question, carried in `answer`. Accepted only on a question;
+  // DECISION_VALUE_APPROVE is refused on a question and this value is refused on
+  // an approval.
+  DECISION_VALUE_ANSWER = 3;
+}
+
+// One choice offered by a question.
+message QuestionChoice {
+  // Caller-chosen id, unique within the question: at most 64 characters, each a
+  // letter, a digit, `_`, `.`, or `-`. An answer names choices by this id.
+  string id = 1;
+  // What the approver reads. Required; at most 200 characters.
+  string label = 2;
+  // Optional detail shown under the label; at most 1000 characters.
+  string description = 3;
+}
+
+// The shape of what a question asks. A question offers choices, free text, or
+// both.
+message Question {
+  // Presented to the approver in this order, which is part of what was asked:
+  // the same choices in a different order are a different question. At most 10.
+  repeated QuestionChoice choices = 1;
+  // When set, an answer may select more than one choice. Requires choices.
+  bool multi_select = 2;
+  // When set, an answer may carry free text (at most 4000 characters).
+  bool allow_free_text = 3;
+}
+
+// An answer to a question.
+//
+// On SubmitApprovalDecisionRequest only `choice_ids` and `text` are read; the
+// other fields are filled by the server on reads. An answer must name only
+// offered choice ids, exactly one when the question is not multi-select and a
+// choice is named, carry `text` only where the question allows free text, and
+// carry at least one choice or non-empty text. Declining is
+// DECISION_VALUE_REJECT, not an empty answer.
+//
+// Free text is written by the approver. To the agent that asked, it is
+// untrusted input, like any other message from a person.
+message Answer {
+  repeated string choice_ids = 1;
+  // The labels of `choice_ids`, in the same order, as they were offered.
+  repeated string choice_labels = 2;
+  string text = 3;
+  string approver_id = 4; // the approver who answered
+  google.protobuf.Timestamp answered_at = 5;
 }
 
 // What an approver-allowlist entry matches.
@@ -343,12 +417,13 @@ message Approval {
 
   Quorum quorum = 8;
   // How many approvals resolve this request: 1 for ANY_ONE, the approver count
-  // for ALL. Assigned at creation and immutable thereafter. This column, not the
+  // for ALL, 1 (answer) for FIRST_ANSWER. Assigned at creation and immutable
+  // thereafter. This column, not the
   // rule name, is the sole authority on the threshold: resolution is a count
   // comparison, which is why it stays correct for a rule this client predates.
   int32 required_approvals = 9;
-  // Approvals recorded so far, so a partially-approved request is legible rather
-  // than merely PENDING.
+  // Approvals recorded so far (answers, for a question), so a partially-approved
+  // request is legible rather than merely PENDING.
   int32 approvals_recorded = 10;
   // When set, the user who created this approval may not decide it, even if they
   // are a listed approver (four-eyes).
@@ -359,8 +434,8 @@ message Approval {
   // approver is a member, since a non-member has no account to sign in with.
   bool require_authenticated_decider = 12;
 
-  // Carries the outcome once terminal: APPROVED and REJECTED are the recorded
-  // decision, EXPIRED and CANCELLED are its absence. There is no second outcome
+  // Carries the outcome once terminal: APPROVED, REJECTED, and ANSWERED are the
+  // recorded decision, EXPIRED and CANCELLED are its absence. There is no second outcome
   // field to disagree with this one.
   ApprovalStatus status = 13;
   google.protobuf.Timestamp decided_at = 14; // unset while PENDING
@@ -388,6 +463,12 @@ message Approval {
   // When true and `agent_id` is set, the terminal outcome is written into that
   // agent's memory as an execution-log step.
   bool record_to_memory = 23;
+
+  ApprovalKind kind = 24;
+  // What a question asks. Unset for kind APPROVAL.
+  Question question = 25;
+  // The answer that resolved a question. Set only when `status` is ANSWERED.
+  Answer answer = 26;
 }
 
 // One recorded decision. Append-only: no API modifies or deletes these, for any
@@ -411,6 +492,8 @@ message ApprovalDecision {
   // record answer a compliance question: not merely that they approved an
   // identifier, but that they were shown the request this digest covers.
   string seen_digest = 10;
+  // The answer, when `decision` is DECISION_VALUE_ANSWER.
+  Answer answer = 11;
 }
 
 // One entry on the enterprise's approver allowlist: an address, or a domain, that
@@ -440,9 +523,11 @@ message CreateApprovalRequest {
 
   // The humans to ask. Refused in full if any address is unaddressable.
   repeated ApproverSpec approvers = 6;
-  Quorum quorum = 7; // required; an unrecognized rule is refused, not defaulted
+  // Required for an approval; an unrecognized rule is refused, not defaulted. A
+  // question may leave it unset, which selects QUORUM_FIRST_ANSWER.
+  Quorum quorum = 7;
   // Optional. When set it MUST equal the value derived from `quorum` (1 for
-  // ANY_ONE, len(approvers) for ALL); a mismatch is refused with a typed error
+  // ANY_ONE, len(approvers) for ALL, 1 for FIRST_ANSWER); a mismatch is refused with a typed error
   // rather than silently corrected, so a caller that sets it is never quietly
   // given a threshold it did not ask for. Leave it unset and the server derives
   // it.
@@ -466,6 +551,15 @@ message CreateApprovalRequest {
   // step. Ignored when `agent_id` is empty. Best-effort by construction: a memory
   // failure never changes what a human decided.
   bool record_to_memory = 15;
+
+  // Unset means APPROVAL_KIND_APPROVAL. An unrecognized kind is refused, not
+  // defaulted. A question takes only `quorum` QUORUM_FIRST_ANSWER and
+  // `on_expire` ON_EXPIRE_EXPIRE; leaving either unset selects it, and any other
+  // value is refused.
+  ApprovalKind kind = 16;
+  // Required for kind QUESTION, refused on kind APPROVAL. Part of the content a
+  // `request_key` replay is compared against.
+  Question question = 17;
 }
 
 // Response message for the ApprovalService.CreateApproval rpc.
@@ -598,6 +692,12 @@ message DescribeApprovalByTokenResponse {
   // submitting a decision; it is recorded on the audit row as evidence of what
   // the approver was shown.
   string rendered_digest = 14;
+
+  ApprovalKind kind = 15;
+  // What a question asks, covered by `rendered_digest`. Unset for kind APPROVAL.
+  Question question = 16;
+  // The recorded answer, when `status` is ANSWERED.
+  Answer answer = 17;
 }
 
 // Request message for the ApprovalService.SubmitApprovalDecision rpc.
@@ -614,6 +714,9 @@ message SubmitApprovalDecisionRequest {
   // The `rendered_digest` from the describe call that showed this approver the
   // request. Recorded on the audit row so the trail shows what they were shown.
   string seen_digest = 5;
+  // Required when `decision` is DECISION_VALUE_ANSWER, refused otherwise. An
+  // answer that does not fit the question is refused without spending the token.
+  Answer answer = 6;
 }
 
 // Response message for the ApprovalService.SubmitApprovalDecision rpc.
