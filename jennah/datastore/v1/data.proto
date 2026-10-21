@@ -237,10 +237,9 @@ message RowOperation {
   // the platform always confines the operation to this dataset, and no predicate
   // can omit or widen that. Ignored for INSERT and UPSERT.
   //
-  // An UPDATE or DELETE with no predicates affects every row of the table
-  // WITHIN THE DATASET. That is permitted and bounded, but it is rarely
-  // what a caller means, so state the key explicitly unless a full-table
-  // operation is intended.
+  // An UPDATE or DELETE with no predicates is refused as an invalid argument,
+  // writing nothing, unless the operation sets `all_rows`: an empty list is far
+  // more often a predicate that was lost than a decision to change every row.
   repeated Predicate where = 4;
 
   // A precondition on THIS operation's own effect. When set and not met, the
@@ -291,6 +290,16 @@ message RowOperation {
   //     Nothing wrapped or saturated is ever stored.
   //
   map<string, ColumnExpression> set_expressions = 6;
+
+  // Set to true to apply an UPDATE or DELETE to every row of the table in this
+  // dataset. Required when `where` is empty, so that changing every row is
+  // always a stated intention rather than the effect of a missing predicate.
+  //
+  // Refused as an invalid argument when `where` names any predicate, since the
+  // two contradict each other, and on INSERT and UPSERT, which address one row
+  // by key. It can be combined with `expect`, for example to require that the
+  // table held exactly the rows the caller believes it did.
+  bool all_rows = 7;
 }
 
 // A precondition on how many rows an operation affects.
