@@ -376,9 +376,12 @@ message Approver {
   ApproverChannel channel = 5;
   DeliveryState delivery_state = 6;
   int32 delivery_attempts = 7;
-  // Provider-reported reason for the most recent failure, retained after a
-  // terminal FAILED so an operator can act on it. Empty while delivery is
-  // succeeding.
+  // Why the most recent attempt failed, in the platform's own words: the email
+  // could not be prepared, the mail provider refused this address, the
+  // platform's own sending was refused, or a temporary failure (retried
+  // automatically, then stopped after the attempt bound). Retained after a
+  // terminal FAILED so the reader can act on it. Empty while delivery is
+  // succeeding. Meant for people; branch on `delivery_state` instead.
   string last_delivery_error = 8;
   google.protobuf.Timestamp last_attempt_at = 9;
   // Set once this approver has recorded a decision. An approver whose token is
