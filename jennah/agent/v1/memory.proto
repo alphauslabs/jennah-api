@@ -181,6 +181,51 @@ service MemoryService {
     };
   }
 
+  // Submits a formation WITHOUT WAITING FOR IT. It takes what FormMemory takes,
+  // and returns as soon as the platform has recorded the formation: in
+  // milliseconds, before any model is called. The formation then runs to
+  // completion whether or not the caller is still connected, and is resumed by
+  // the platform if it is interrupted. GetFormation reports where it stands and,
+  // once it is done, carries the same receipt FormMemory would have returned.
+  //
+  // Use it where the caller cannot hold a request open for a formation's
+  // duration: a tool call a host will cancel, a job that exits, a function with
+  // a short timeout. A caller that wants the receipt inline keeps using
+  // FormMemory, which is unchanged.
+  //
+  // Everything FormMemory refuses on the request alone is refused HERE, before
+  // anything is accepted: an invalid or oversize conversation, a scope out of
+  // reach, an enterprise at its formation ceiling, a formation key reused with
+  // different content. What only running the formation can reveal (an
+  // unreachable formation model, a credential revoked before it ran) is reported
+  // by GetFormation as FAILED.
+  //
+  // The formation runs with the submitter's authority AS IT IS WHEN THE
+  // FORMATION RUNS, not as it was when it was submitted, so revoking a key stops
+  // the formations it submitted that have not yet written.
+  //
+  // Metered as FormMemory is. A formation the platform had to resume may have
+  // consumed units on the attempt that was interrupted, and those units are
+  // counted.
+  //
+  // Requires the same permission as FormMemory.
+  rpc SubmitFormation(SubmitFormationRequest) returns (SubmitFormationResponse) {
+    option (google.api.http) = {
+      post: "/v1/agents/{scope_id}/formations"
+      body: "*"
+    };
+  }
+
+  // Reads a submitted formation: waiting, running, finished with its receipt,
+  // or failed with its reason. It never waits for the formation to finish.
+  //
+  // Requires the same permission and reach as reading the workspace's memory.
+  // An id from another workspace, or from a workspace the caller cannot reach,
+  // is NOT_FOUND, so a refusal never confirms that the formation exists.
+  rpc GetFormation(GetFormationRequest) returns (GetFormationResponse) {
+    option (google.api.http) = {get: "/v1/agents/{scope_id}/formations/{formation_id}"};
+  }
+
   // --- Memory vocabulary (external/gateway RPCs; authenticated) ---
 
   // Declares the memory vocabulary for the caller's active enterprise, or for one
@@ -1919,6 +1964,108 @@ message FormMemoryResponse {
   // A receipt returned for a replayed formation key reports the units of the
   // formation that produced it, and the replay itself consumes none.
   int64 formation_units = 14;
+}
+
+// ---------------------------------------------------------------------------
+// Submitted formations
+// ---------------------------------------------------------------------------
+
+message SubmitFormationRequest {
+  // Route path parameter, never read from the body. Exactly as
+  // FormMemoryRequest.scope_id.
+  string scope_id = 1;
+
+  // The conversation to form memory from, in order, with the same meaning and
+  // the same bounds as FormMemoryRequest.turns. An oversize submission is
+  // refused here, before anything is accepted.
+  repeated ConversationTurn turns = 2;
+
+  // Optional key making the submission SAFELY RESENDABLE, scoped to the
+  // workspace. A resend under a key whose formation was already accepted
+  // returns THAT formation, whether it is still waiting, running or done, and
+  // starts nothing. A key reused with a different conversation is refused, as
+  // it is for FormMemory.
+  //
+  // The key space is shared with FormMemoryRequest.formation_key: a submission
+  // under a key a FormMemory call already completed returns a finished
+  // formation carrying that call's receipt.
+  string formation_key = 3;
+
+  // When the conversation took place. Exactly as FormMemoryRequest.observed_at,
+  // and part of what makes two submissions identical for `formation_key`.
+  google.protobuf.Timestamp observed_at = 4;
+}
+
+message SubmitFormationResponse {
+  // The accepted formation. A new submission is ACCEPTED; a resend under an
+  // existing key carries that formation's current state. As with FormMemory, a
+  // resend is not marked as one.
+  Formation formation = 1;
+}
+
+message GetFormationRequest {
+  // Route path parameter: the workspace the formation was submitted to. A
+  // formation id is only meaningful inside its workspace, and an id read under
+  // any other workspace is answered as NOT_FOUND.
+  string scope_id = 1;
+
+  // Route path parameter: the id SubmitFormation returned.
+  string formation_id = 2;
+}
+
+message GetFormationResponse {
+  Formation formation = 1;
+}
+
+// Where a submitted formation stands.
+enum FormationState {
+  FORMATION_STATE_UNSPECIFIED = 0;
+
+  // Recorded and waiting to start. A formation can return here from RUNNING
+  // when the platform resumes one that was interrupted.
+  FORMATION_STATE_ACCEPTED = 1;
+
+  // Extraction, recall, reconciliation or the write is under way.
+  FORMATION_STATE_RUNNING = 2;
+
+  // Done. `receipt` is set. A formation that stored nothing is FINISHED with a
+  // receipt carrying no commit timestamp, exactly as FormMemory would report it.
+  FORMATION_STATE_FINISHED = 3;
+
+  // Will not complete. `failure_reason` and `failure_message` say why, and the
+  // formation wrote no memory.
+  FORMATION_STATE_FAILED = 4;
+}
+
+// A formation submitted through SubmitFormation.
+message Formation {
+  // Opaque, platform-assigned, unique within the workspace.
+  string formation_id = 1;
+
+  // The workspace it reads and writes.
+  string scope_id = 2;
+
+  FormationState state = 3;
+
+  // Set when FINISHED: the receipt FormMemory would have returned for the same
+  // conversation, including the units the formation consumed.
+  FormMemoryResponse receipt = 4;
+
+  // Set when FAILED: a machine-readable reason, from the same vocabulary
+  // FormMemory's error details use (for example a revoked credential or a
+  // formation model that could not be reached), and a message in plain terms.
+  string failure_reason = 5;
+  string failure_message = 6;
+
+  // When the platform accepted the submission.
+  google.protobuf.Timestamp accepted_at = 7;
+
+  // When it became FINISHED or FAILED. Unset before that.
+  //
+  // A formation's record is kept for 7 days after this instant and then reads as
+  // NOT_FOUND. The memory it wrote, and the conversation it recorded, are not
+  // affected.
+  google.protobuf.Timestamp finished_at = 8;
 }
 
 // ---------------------------------------------------------------------------
