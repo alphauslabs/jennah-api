@@ -61,6 +61,20 @@ service AuthService {
   // Revokes the session behind a refresh token. Authenticated.
   rpc Logout(LogoutRequest) returns (LogoutResponse);
 
+  // Signs in a Ripple user with their Ripple username and password. The backend
+  // relays the credentials to Ripple's login service with jennah's own Ripple
+  // client, verifies the returned Ripple token, discards it, and mints jennah
+  // tokens. When Ripple requires a second factor, the response carries a
+  // challenge and no tokens; the caller resubmits every field plus the code.
+  // Failed attempts are throttled per username and per client address before
+  // Ripple is contacted. Unauthenticated (allowlist).
+  rpc RipplePasswordLogin(RipplePasswordLoginRequest) returns (RipplePasswordLoginResponse);
+
+  // Asks Ripple to email a one-time sign-in code to a Ripple user, for the
+  // EMAIL challenge of RipplePasswordLogin. The response is identical whether
+  // or not the username exists. Unauthenticated (allowlist).
+  rpc RequestRippleEmailCode(RequestRippleEmailCodeRequest) returns (RequestRippleEmailCodeResponse);
+
   // --- API-key management (external/gateway RPCs; authenticated) ---
 
   // Mints a new API key for the caller's active enterprise. External (gateway)
@@ -261,6 +275,8 @@ enum Provider {
   PROVIDER_UNSPECIFIED = 0;
   PROVIDER_GOOGLE = 1;
   PROVIDER_GITHUB = 2;
+  // Ripple (Alphaus) username/password, relayed by RipplePasswordLogin.
+  PROVIDER_RIPPLE = 3;
 }
 
 // Client class initiating a login; selects the flow and where flow state lives.
@@ -476,6 +492,63 @@ message LogoutRequest {
 
 // Response message for the AuthService.Logout rpc.
 message LogoutResponse {}
+
+// Request message for the AuthService.RipplePasswordLogin rpc.
+//
+// password, mfa_code, and email_code are secrets: the backend never logs or
+// stores them.
+message RipplePasswordLoginRequest {
+  string username = 1; // Ripple username (the root user's email, or a sub-user name)
+  string password = 2;
+  // Authenticator-app code (or a Ripple recovery code), sent only after a
+  // CHALLENGE_AUTHENTICATOR response.
+  string mfa_code = 3;
+  // Emailed one-time code, sent only after a CHALLENGE_EMAIL response.
+  string email_code = 4;
+  // UNSPECIFIED or FRAGMENT: tokens in this response (CLI). CODE: a single-use
+  // code redeemable via ExchangeCode instead (confidential client / BFF).
+  ResponseMode response_mode = 5;
+  // End-user address as seen by the proxy, for per-address throttling and for
+  // Ripple's own per-address limit. Best effort: a direct gRPC caller sets it.
+  string client_ip = 6;
+}
+
+// Response message for the AuthService.RipplePasswordLogin rpc.
+//
+// Exactly one outcome is populated: a challenge (no tokens, no code), a code
+// (CODE mode), or tokens. Failures are gRPC errors: UNAUTHENTICATED for wrong
+// credentials (an ErrorInfo detail with reason RIPPLE_LOCK_WARNING carries
+// metadata "attempts_left" when Ripple warns of a lock), PERMISSION_DENIED with
+// ErrorInfo reason RIPPLE_ACCOUNT_LOCKED, RIPPLE_ORG_NOT_ACTIVATED, or
+// NO_ENTERPRISE_ACCESS, RESOURCE_EXHAUSTED when jennah's throttle refuses the
+// attempt, and UNAVAILABLE when Ripple cannot be reached.
+message RipplePasswordLoginResponse {
+  // Second factor Ripple requires before it will sign the user in.
+  enum Challenge {
+    CHALLENGE_UNSPECIFIED = 0;
+    // Resubmit with mfa_code from the user's authenticator app.
+    CHALLENGE_AUTHENTICATOR = 1;
+    // Resubmit with email_code; RequestRippleEmailCode sends it.
+    CHALLENGE_EMAIL = 2;
+  }
+  Challenge challenge = 1;
+  string access_token = 2; // token mode only: jennah JWT (~1h)
+  string refresh_token = 3; // token mode only: opaque, revocable, at most ~24h for Ripple sessions
+  int64 expires_in = 4; // access-token TTL, seconds
+  Identity identity = 5; // set on success (token or code mode)
+  bool is_new_user = 6; // true when this sign-in created the jennah user
+  string code = 7; // CODE mode only: single-use code for ExchangeCode
+  ResponseMode response_mode = 8; // resolved delivery mode on success
+}
+
+// Request message for the AuthService.RequestRippleEmailCode rpc.
+message RequestRippleEmailCodeRequest {
+  string username = 1;
+  string client_ip = 2; // as in RipplePasswordLoginRequest
+}
+
+// Response message for the AuthService.RequestRippleEmailCode rpc.
+message RequestRippleEmailCodeResponse {}
 
 // Non-secret metadata for a single API key. The raw secret is NEVER carried
 // here: it is returned only once, in CreateApiKeyResponse. `last4` is a
