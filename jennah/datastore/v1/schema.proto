@@ -162,6 +162,39 @@ message TableDeclaration {
 
   // The dataset is the unit of isolation: every principal that reaches a dataset
   // reaches all of its rows.
+
+  // Optional row retention: rows whose retention column is older than `days`
+  // are removed by the platform in the background.
+  //
+  // UNSET keeps what the table has: no retention for a new table, the current
+  // one for an existing table. A client that predates this field therefore
+  // never removes a retention by re-declaring. `days` 1 to 3650 sets it, and
+  // `days` 0 removes it from an existing table. Setting or shortening a
+  // retention also removes existing rows already past the new limit; the
+  // response's TableStatus.retention_change says so.
+  RowRetention retention = 5;
+}
+
+// A table's row retention.
+message RowRetention {
+  // Logical name of a TIMESTAMP column of the same table. A row whose value in
+  // this column is NULL is never removed by retention.
+  string column = 1;
+  // Whole days, 1 to 3650; 0 removes the retention (declarations only).
+  //
+  // Retention is a lower bound: a row is never removed before it expires, and
+  // it may stay readable for some time after, typically up to three days,
+  // until the background deletion reaches it.
+  int32 days = 2;
+}
+
+// What a declaration did to a table's retention.
+message RetentionChange {
+  RowRetention from = 1; // unset when the table had none
+  RowRetention to = 2; // unset when the declaration removed it
+  // True when the change removes existing rows: a retention added, its column
+  // changed, or its days shortened.
+  bool removes_rows = 3;
 }
 
 // Request message for the SchemaService.DeclareTables rpc.
@@ -178,6 +211,8 @@ message TableStatus {
   SchemaStatus status = 2;
   // Human-readable detail for a PENDING or FAILED status. Empty for READY.
   string status_detail = 3;
+  // Set only when this declaration changed the table's retention.
+  RetentionChange retention_change = 4;
 }
 
 // Response message for the SchemaService.DeclareTables rpc.
@@ -225,6 +260,9 @@ message TableSchema {
   string status_detail = 6;
   google.protobuf.Timestamp created_at = 7;
   google.protobuf.Timestamp updated_at = 8; // last successful schema change
+  // The retention in force, unset when the table has none. A retention whose
+  // schema change is still applying is not reported until it has applied.
+  RowRetention retention = 9;
 }
 
 // A dataset's usage against its tier's schema ceilings, so a caller can see how
