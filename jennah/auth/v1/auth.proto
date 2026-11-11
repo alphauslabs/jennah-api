@@ -376,6 +376,11 @@ message WhoAmIResponse {
   // auth/RBAC is not configured. A client uses this to enable/disable admin
   // controls precisely, instead of inferring capability from the built-in role.
   repeated string permissions = 3;
+  // The API key the caller authenticated with: its metadata, never its secret,
+  // with all of its own selectors. Set only for an API-key caller; unset for a
+  // user token, and left unset if the key's record can't be read. A key with no
+  // expires_at here never expires; a missing api_key means unknown.
+  ApiKey api_key = 4;
 }
 
 // Request message for the AuthService.StartLogin rpc.
