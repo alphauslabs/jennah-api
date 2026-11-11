@@ -599,12 +599,32 @@ message ListApprovalsRequest {
   // addressed to the caller. Meaningless for a key-authenticated caller, which
   // can never be an approver.
   bool only_awaiting_me = 5;
+  // Optional: only approvals whose request_key starts with this string,
+  // compared byte for byte and case-sensitively. Empty means no filter. Longer
+  // than the maximum request_key length is refused as INVALID_ARGUMENT.
+  string request_key_prefix = 6;
+  // Optional settlement cursor. When set, the listing switches to settlement
+  // order: only approvals in a terminal status whose settlement was recorded
+  // strictly after this time, oldest settlement first, then by approval_id.
+  // Pending approvals never appear in this order, and a status filter of
+  // PENDING with this field is refused as INVALID_ARGUMENT. An approval that
+  // expires appears once its expiry is recorded (normally within a minute of
+  // the deadline), at the time of that recording, not at the deadline.
+  // Ignored when page_token carries a settlement-order position, which then
+  // governs.
+  google.protobuf.Timestamp decided_after = 7;
 }
 
 // Response message for the ApprovalService.ListApprovals rpc.
 message ListApprovalsResponse {
   repeated Approval approvals = 1;
   string next_page_token = 2; // empty when there are no more pages
+  // Set on every settlement-order response (see decided_after), including the
+  // last page and an empty one; unset in newest-first order. Pass it back as
+  // page_token on the next poll to continue after the last approval the walk
+  // has reached. It is the only state a poller needs to keep. When
+  // next_page_token is set, the two are equal.
+  string resume_token = 3;
 }
 
 // Request message for the ApprovalService.CancelApproval rpc.
