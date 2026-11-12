@@ -310,6 +310,25 @@ message GetBillingStateResponse {
   // because the enterprise pays its model provider for them directly; they are
   // counted here so they stay visible.
   int64 byo_formations = 13;
+
+  // What Alphaus provides the enterprise under a contract made outside Jennah,
+  // such as the managed agents included with a Ripple contract, for grants in
+  // effect now. Empty when there are none. Grants are recorded by Alphaus
+  // operators; no API writes them.
+  repeated BundleGrant grants = 14;
+}
+
+// A bundle grant in effect: something included with a contract made outside
+// Jennah. Internal details of the contract are not returned.
+message BundleGrant {
+  // What is granted, such as "managed-agents".
+  string grant = 1;
+
+  // The contract it comes from, such as "ripple".
+  string source = 2;
+
+  // When the grant ends (exclusive): the grant covers every day before it.
+  google.protobuf.Timestamp ends_at = 3;
 }
 
 // Request message for the BillingService.SetFormationOverageCap rpc.
